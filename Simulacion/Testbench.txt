@@ -1,0 +1,3105 @@
+`timescale 1ns/1ps
+`ifdef ELDI_TB_SELECTOR
+`timescale 1ns/1ps
+module view_selector_case#(
+parameter integer N=4
+)(
+input wire clk,
+output reg done
+);
+reg rst_n;
+reg key_s2;
+reg frame_start;
+wire mode_fft;
+reg expected_mode;
+integer checks;
+integer i;
+view_selector#(.DEBOUNCE_CYCLES(N))dut(
+.clk(clk),
+.rst_n(rst_n),
+.key_s2(key_s2),
+.frame_start(frame_start),
+.mode_fft(mode_fft)
+);
+task automatic check_output;
+begin
+checks=checks+1;
+if(mode_fft!==expected_mode)
+$fatal(1,
+"N=%0d comprobacion=%0d t=%0t: modo=%b esperado=%b key=%b frame=%b reset=%b",
+N,checks,$time,mode_fft,expected_mode,
+key_s2,frame_start,rst_n);
+end
+endtask
+task automatic cycle(
+input reg next_key,
+input reg next_frame,
+input reg expected_after
+);
+begin
+@(negedge clk);
+key_s2=next_key;
+frame_start=next_frame;
+expected_mode=expected_after;
+@(posedge clk);
+#1;
+check_output();
+end
+endtask
+task automatic hold_key(
+input reg level,
+input integer cycles,
+input reg expected_after
+);
+integer j;
+begin
+for(j=0;j<cycles;j=j+1)
+cycle(level,1'b0,expected_after);
+end
+endtask
+task automatic publish(
+input reg level,
+input reg expected_after
+);
+begin
+cycle(level,1'b1,expected_after);
+cycle(level,1'b0,expected_after);
+end
+endtask
+task automatic reset_case(input reg held_key);
+begin
+@(negedge clk);
+rst_n=1'b0;
+key_s2=held_key;
+frame_start=1'b0;
+expected_mode=1'b0;
+#1;
+check_output();
+repeat(2)@(posedge clk);
+#1;
+rst_n=1'b1;
+end
+endtask
+task automatic unsampled_pulse(
+input reg stable_level,
+input reg expected_after
+);
+begin
+@(negedge clk);
+frame_start=1'b0;
+expected_mode=expected_after;
+#1key_s2=~stable_level;
+#1key_s2=stable_level;
+@(posedge clk);
+#1;
+check_output();
+end
+endtask
+task automatic bounce(
+input reg stable_level,
+input reg expected_after
+);
+integer j;
+begin
+for(j=0;j<4;j=j+1)begin
+if(N==1)begin
+unsampled_pulse(stable_level,expected_after);
+end else begin
+cycle(~stable_level,1'b0,expected_after);
+cycle(stable_level,1'b0,expected_after);
+end
+end
+hold_key(stable_level,N+2,expected_after);
+end
+endtask
+initial begin
+rst_n=1'b0;
+key_s2=1'b0;
+frame_start=1'b0;
+expected_mode=1'b0;
+checks=0;
+done=1'b0;
+reset_case(1'b0);
+hold_key(1'b0,N+2,1'b0);
+publish(1'b0,1'b0);
+if(N>1)begin
+hold_key(1'b1,N-1,1'b0);
+hold_key(1'b0,N+2,1'b0);
+end else begin
+unsampled_pulse(1'b0,1'b0);
+hold_key(1'b0,N+2,1'b0);
+end
+publish(1'b0,1'b0);
+bounce(1'b0,1'b0);
+publish(1'b0,1'b0);
+hold_key(1'b1,N+2,1'b0);
+publish(1'b1,1'b1);
+reset_case(1'b0);
+hold_key(1'b1,N+1,1'b0);
+cycle(1'b1,1'b1,1'b0);
+cycle(1'b1,1'b0,1'b0);
+publish(1'b1,1'b1);
+for(i=0;i<24;i=i+1)begin
+cycle(1'b1,1'b0,1'b1);
+publish(1'b1,1'b1);
+end
+bounce(1'b1,1'b1);
+publish(1'b1,1'b1);
+if(N>1)begin
+hold_key(1'b0,N-1,1'b1);
+hold_key(1'b1,N+2,1'b1);
+publish(1'b1,1'b1);
+end
+hold_key(1'b0,N+2,1'b1);
+hold_key(1'b1,N+2,1'b1);
+publish(1'b1,1'b0);
+reset_case(1'b0);
+hold_key(1'b1,N+2,1'b0);
+hold_key(1'b0,N+2,1'b0);
+hold_key(1'b1,N+2,1'b0);
+hold_key(1'b0,N+2,1'b0);
+publish(1'b0,1'b0);
+reset_case(1'b0);
+for(i=0;i<3;i=i+1)begin
+hold_key(1'b1,N+2,1'b0);
+hold_key(1'b0,N+2,1'b0);
+end
+publish(1'b0,1'b1);
+reset_case(1'b1);
+hold_key(1'b1,N+1,1'b0);
+cycle(1'b1,1'b1,1'b0);
+publish(1'b1,1'b1);
+hold_key(1'b1,N+4,1'b1);
+publish(1'b1,1'b1);
+reset_case(1'b0);
+hold_key(1'b1,N+2,1'b0);
+reset_case(1'b0);
+hold_key(1'b0,N+2,1'b0);
+publish(1'b0,1'b0);
+hold_key(1'b1,N+1,1'b0);
+reset_case(1'b0);
+hold_key(1'b0,N+2,1'b0);
+publish(1'b0,1'b0);
+$display("PASS: DEBOUNCE_CYCLES=%0d, comprobaciones=%0d",N,checks);
+done=1'b1;
+end
+endmodule
+module tb_view_selector;
+reg clk=1'b0;
+wire done_n4;
+wire done_n1;
+always#5clk=~clk;
+view_selector_case#(.N(4))case_n4(
+.clk(clk),.done(done_n4)
+);
+view_selector_case#(.N(1))case_n1(
+.clk(clk),.done(done_n1)
+);
+initial begin
+$dumpfile("view_selector.vcd");
+$dumpvars(0,tb_view_selector);
+wait(done_n4&&done_n1);
+$display("PASS: selector de vista, todos los casos completados.");
+$finish;
+end
+initial begin
+#50000;
+$fatal(1,"TIMEOUT: el testbench no termino");
+end
+endmodule
+module tb_entrega;
+tb_view_selector prueba();
+endmodule
+`elsif ELDI_TB_CAPTURA
+`timescale 1ns/1ps
+module tb_sample_capture;
+reg clk=1'b0;
+always#5clk=~clk;
+reg rst_n;
+reg sample_valid;
+reg signed[15:0]sample_signed;
+wire block_valid;
+wire block_bank;
+wire[31:0]block_seq;
+reg block_release;
+wire overrun_latched;
+reg rd_en;
+reg rd_bank;
+reg[7:0]rd_addr;
+wire signed[15:0]rd_sample;
+wire rd_valid;
+reg expected_valid;
+reg expected_bank;
+reg[31:0]expected_seq;
+reg expected_overrun;
+reg expected_next_bank;
+reg[31:0]expected_next_seq;
+integer expected_pattern_id;
+integer checks;
+integer read_checks;
+integer i;
+integer j;
+sample_capture dut(
+.clk(clk),.rst_n(rst_n),
+.sample_valid(sample_valid),.sample_signed(sample_signed),
+.block_valid(block_valid),.block_bank(block_bank),.block_seq(block_seq),
+.block_release(block_release),.overrun_latched(overrun_latched),
+.rd_en(rd_en),.rd_bank(rd_bank),.rd_addr(rd_addr),
+.rd_sample(rd_sample),.rd_valid(rd_valid)
+);
+function automatic signed[15:0]pattern(
+input integer block_id,
+input integer address
+);
+begin
+case(address)
+0:pattern=16'h8000+block_id;
+1:pattern=16'h7fff-block_id;
+2:pattern=16'hffff;
+3:pattern=16'h0000;
+254:pattern=16'h1234^block_id;
+255:pattern=16'hfedc^block_id;
+default:pattern=(address*73+block_id*997)^16'ha55a;
+endcase
+end
+endfunction
+task automatic check_outputs(
+input reg expected_rd_valid,
+input reg signed[15:0]expected_rd_sample
+);
+begin
+checks=checks+1;
+if(block_valid!==expected_valid||
+block_bank!==expected_bank||block_seq!==expected_seq||
+overrun_latched!==expected_overrun)
+$fatal(1,
+"Metadata t=%0t: valid=%b/%b banco=%b/%b seq=%0d/%0d overrun=%b/%b",
+$time,block_valid,expected_valid,block_bank,expected_bank,
+block_seq,expected_seq,overrun_latched,expected_overrun);
+if(rd_valid!==expected_rd_valid)
+$fatal(1,"rd_valid t=%0t: obtenido=%b esperado=%b",
+$time,rd_valid,expected_rd_valid);
+if(expected_rd_valid)begin
+read_checks=read_checks+1;
+if(rd_sample!==expected_rd_sample)
+$fatal(1,
+"Lectura t=%0t banco=%0d addr=%0d dato=%h esperado=%h",
+$time,rd_bank,rd_addr,rd_sample,expected_rd_sample);
+end
+end
+endtask
+task automatic cycle(
+input reg next_sample_valid,
+input reg signed[15:0]next_sample,
+input reg next_release,
+input reg next_rd_en,
+input reg next_rd_bank,
+input reg[7:0]next_rd_addr,
+input integer publication_id,
+input reg expect_fault
+);
+reg expected_read;
+reg signed[15:0]expected_word;
+begin
+@(negedge clk);
+sample_valid=next_sample_valid;
+sample_signed=next_sample;
+block_release=next_release;
+rd_en=next_rd_en;
+rd_bank=next_rd_bank;
+rd_addr=next_rd_addr;
+expected_read=next_rd_en&&expected_valid&&
+(next_rd_bank==expected_bank);
+expected_word=pattern(expected_pattern_id,next_rd_addr);
+if(!expected_overrun)begin
+if(expect_fault)begin
+expected_overrun=1'b1;
+end else begin
+if(next_release)
+expected_valid=1'b0;
+if(publication_id>=0)begin
+expected_valid=1'b1;
+expected_bank=expected_next_bank;
+expected_seq=expected_next_seq;
+expected_pattern_id=publication_id;
+expected_next_bank=~expected_next_bank;
+expected_next_seq=expected_next_seq+32'd1;
+end
+end
+end
+@(posedge clk);
+#1;
+check_outputs(expected_read,expected_word);
+end
+endtask
+task automatic reset_capture;
+begin
+@(negedge clk);
+rst_n=1'b0;
+sample_valid=1'b0;
+sample_signed=16'sd0;
+block_release=1'b0;
+rd_en=1'b0;
+rd_bank=1'b0;
+rd_addr=8'd0;
+expected_valid=1'b0;
+expected_bank=1'b0;
+expected_seq=32'd0;
+expected_overrun=1'b0;
+expected_next_bank=1'b0;
+expected_next_seq=32'd0;
+expected_pattern_id=-1;
+#1;
+check_outputs(1'b0,16'sd0);
+repeat(2)@(posedge clk);
+#1rst_n=1'b1;
+end
+endtask
+task automatic send_block(
+input integer block_id,
+input reg add_gaps,
+input reg publish_at_end,
+input reg fault_at_end
+);
+integer address;
+begin
+for(address=0;address<256;address=address+1)begin
+if(add_gaps&&((address%13)==0))
+cycle(1'b0,16'hdead,1'b0,1'b1,
+expected_next_bank,address,-1,1'b0);
+cycle(1'b1,pattern(block_id,address),1'b0,1'b0,1'b0,
+8'd0,((address==255)&&publish_at_end)?block_id:-1,
+(address==255)&&fault_at_end);
+end
+end
+endtask
+task automatic read_published_block;
+integer address;
+begin
+for(address=0;address<256;address=address+1)
+cycle(1'b0,16'sd0,1'b0,1'b1,expected_bank,
+address,-1,1'b0);
+end
+endtask
+initial begin
+rst_n=1'b0;
+sample_valid=1'b0;
+sample_signed=16'sd0;
+block_release=1'b0;
+rd_en=1'b0;
+rd_bank=1'b0;
+rd_addr=8'd0;
+expected_valid=1'b0;
+expected_bank=1'b0;
+expected_seq=32'd0;
+expected_overrun=1'b0;
+expected_next_bank=1'b0;
+expected_next_seq=32'd0;
+expected_pattern_id=-1;
+checks=0;
+read_checks=0;
+reset_capture();
+cycle(1'b0,16'sd0,1'b1,1'b1,1'b0,8'd255,-1,1'b0);
+cycle(1'b0,16'sd0,1'b0,1'b1,1'b1,8'd0,-1,1'b0);
+send_block(0,1'b1,1'b1,1'b0);
+cycle(1'b0,16'sd0,1'b0,1'b1,1'b0,8'd255,-1,1'b0);
+cycle(1'b0,16'sd0,1'b0,1'b1,1'b1,8'd0,-1,1'b0);
+for(j=1;j<4;j=j+1)begin
+for(i=0;i<256;i=i+1)
+cycle(1'b1,pattern(j,i),(i==255),1'b1,expected_bank,
+(j==2)?(255-i):i,(i==255)?j:-1,1'b0);
+end
+read_published_block();
+cycle(1'b0,16'sd0,1'b1,1'b0,1'b0,8'd0,-1,1'b0);
+cycle(1'b0,16'sd0,1'b1,1'b1,expected_bank,8'd255,-1,1'b0);
+send_block(4,1'b0,1'b1,1'b0);
+read_published_block();
+cycle(1'b0,16'sd0,1'b1,1'b1,expected_bank,8'd255,-1,1'b0);
+reset_capture();
+for(i=0;i<131;i=i+1)
+cycle(1'b1,pattern(20,i),1'b0,1'b0,1'b0,8'd0,-1,1'b0);
+reset_capture();
+cycle(1'b0,16'sd0,1'b0,1'b1,1'b0,8'd130,-1,1'b0);
+send_block(21,1'b1,1'b1,1'b0);
+read_published_block();
+reset_capture();
+send_block(10,1'b0,1'b1,1'b0);
+send_block(11,1'b0,1'b0,1'b1);
+for(i=0;i<600;i=i+1)
+cycle(1'b1,pattern(12,i%256),(i==200),1'b1,
+1'b0,i%256,-1,1'b0);
+cycle(1'b0,16'sd0,1'b1,1'b1,1'b1,8'd0,-1,1'b0);
+read_published_block();
+reset_capture();
+send_block(22,1'b0,1'b1,1'b0);
+read_published_block();
+cycle(1'b0,16'sd0,1'b1,1'b0,1'b0,8'd0,-1,1'b0);
+$display("PASS: sample_capture, comprobaciones=%0d lecturas=%0d",
+checks,read_checks);
+$finish;
+end
+initial begin
+$dumpfile("sample_capture.vcd");
+$dumpvars(0,tb_sample_capture);
+#200000;
+$fatal(1,"TIMEOUT: sample_capture no termino");
+end
+endmodule
+module tb_entrega;
+tb_sample_capture prueba();
+endmodule
+`elsif ELDI_TB_TWIDDLE
+`timescale 1ns/1ps
+module tb_fft_twiddle_rom;
+reg clk=1'b0;
+always#5clk=~clk;
+reg en=1'b0;
+reg[6:0]addr=7'd0;
+wire signed[17:0]w_re,w_im;
+integer index;
+integer expected_re,expected_im;
+integer previous_re,previous_im;
+integer checks=0;
+real angle;
+localparam real PI=3.14159265358979323846;
+fft_twiddle_rom dut(
+.clk(clk),.en(en),.addr(addr),.w_re(w_re),.w_im(w_im)
+);
+function automatic integer nearest_away(input real value);
+begin
+if(value>=0.0)
+nearest_away=$rtoi(value+0.5);
+else
+nearest_away=-$rtoi(-value+0.5);
+end
+endfunction
+initial begin
+repeat(2)@(negedge clk);
+for(index=0;index<128;index=index+1)begin
+@(negedge clk);
+en=1'b1;
+addr=index[6:0];
+#1;
+if(index>0&&
+($signed(w_re)!==previous_re||$signed(w_im)!==previous_im))
+$fatal(1,"La ROM cambio antes del flanco de lectura: indice %0d",index);
+angle=2.0*PI*index/256.0;
+expected_re=nearest_away(65536.0*$cos(angle));
+expected_im=nearest_away(-65536.0*$sin(angle));
+@(posedge clk);
+#1;
+if($signed(w_re)!==expected_re||$signed(w_im)!==expected_im)
+$fatal(1,"W[%0d]=(%0d,%0d), esperado=(%0d,%0d)",
+index,$signed(w_re),$signed(w_im),expected_re,expected_im);
+checks=checks+1;
+previous_re=expected_re;
+previous_im=expected_im;
+@(negedge clk);
+en=1'b0;
+addr=7'd127-index[6:0];
+repeat(2)begin
+@(posedge clk);
+#1;
+if($signed(w_re)!==previous_re||$signed(w_im)!==previous_im)
+$fatal(1,"La ROM no retuvo coeficiente con en=0: indice %0d",index);
+checks=checks+1;
+end
+end
+$display("PASS: ROM FFT256, 128 coeficientes y retencion sincrona, %0d comprobaciones",checks);
+$finish;
+end
+initial begin
+#100000;
+$fatal(1,"Timeout ROM FFT256");
+end
+endmodule
+module tb_entrega;
+tb_fft_twiddle_rom prueba();
+endmodule
+`elsif ELDI_TB_MARIPOSA
+`timescale 1ns/1ps
+module tb_fft_butterfly;
+localparam real CLOCK_NS=1000.0/27.0;
+reg clk=0;
+always#(CLOCK_NS/2.0)clk=!clk;
+reg rst_n=0,start=0;
+reg signed[17:0]a_re=0,a_im=0,b_re=0,b_im=0,w_re=0,w_im=0;
+wire busy,done;
+wire signed[17:0]y0_re,y0_im,y1_re,y1_im;
+integer cases_checked=0;
+reg[31:0]rng=32'h62024a17;
+fft_butterfly dut(
+.clk(clk),.rst_n(rst_n),.start(start),.a_re(a_re),.a_im(a_im),
+.b_re(b_re),.b_im(b_im),.w_re(w_re),.w_im(w_im),
+.busy(busy),.done(done),.y0_re(y0_re),.y0_im(y0_im),
+.y1_re(y1_re),.y1_im(y1_im)
+);
+function automatic signed[17:0]round_sat(input longint signed n);
+longint signed q;
+begin
+if(n>=0)q=(n+64'sd65536)/64'sd131072;
+else q=-((-n+64'sd65536)/64'sd131072);
+if(q>131071)round_sat=18'sd131071;
+else if(q<-131072)round_sat=-18'sd131072;
+else round_sat=q;
+end
+endfunction
+function automatic signed[17:0]random18;
+begin
+rng=rng*32'd1664525+32'd1013904223;
+random18=$signed(rng[31:14]);
+end
+endfunction
+task automatic reset_dut;
+begin
+@(negedge clk);rst_n=0;start=0;
+repeat(3)@(negedge clk);
+rst_n=1;
+@(posedge clk);#1;
+if(busy||done)$fatal(1,"BF: reset no devuelve reposo");
+end
+endtask
+task automatic run_case(
+input logic signed[17:0]ar,ai,br,bi,wr,wi,
+input bit inject_busy_start
+);
+longint signed ar64,ai64,br64,bi64,wr64,wi64,tr,ti;
+reg signed[17:0]e0r,e0i,e1r,e1i;
+integer elapsed;
+begin
+ar64=ar;ai64=ai;br64=br;bi64=bi;wr64=wr;wi64=wi;
+tr=br64*wr64-bi64*wi64;
+ti=br64*wi64+bi64*wr64;
+e0r=round_sat(ar64*65536+tr);e0i=round_sat(ai64*65536+ti);
+e1r=round_sat(ar64*65536-tr);e1i=round_sat(ai64*65536-ti);
+@(negedge clk);
+if(busy)$fatal(1,"BF: intento de caso con DUT ocupado");
+a_re=ar;a_im=ai;b_re=br;b_im=bi;w_re=wr;w_im=wi;start=1;
+@(posedge clk);#1;
+if(!busy||done)$fatal(1,"BF: start no capturado en C0");
+@(negedge clk);
+a_re=18'sd131071;a_im=-18'sd131072;
+b_re=-18'sd131072;b_im=18'sd131071;
+w_re=18'sd12345;w_im=-18'sd54321;
+start=inject_busy_start;
+for(elapsed=1;elapsed<=3;elapsed=elapsed+1)begin
+@(posedge clk);#1;
+if(elapsed<3&&(!busy||done))
+$fatal(1,"BF: latencia incorrecta en C%0d",elapsed);
+if(elapsed==3)begin
+if(busy||!done)$fatal(1,"BF: resultado debe estar en C3");
+if(y0_re!==e0r||y0_im!==e0i||y1_re!==e1r||y1_im!==e1i)
+$fatal(1,"BF caso %0d: got (%0d,%0d),(%0d,%0d); esperado (%0d,%0d),(%0d,%0d)",
+cases_checked,y0_re,y0_im,y1_re,y1_im,e0r,e0i,e1r,e1i);
+end
+@(negedge clk);start=0;
+end
+repeat(3)begin
+@(posedge clk);#1;
+if(done||busy)$fatal(1,"BF: done largo o start ocupado quedo en cola");
+end
+cases_checked=cases_checked+1;
+end
+endtask
+integer n;
+reg signed[17:0]ra,ia,rb,ib,rw,iw;
+initial begin
+$dumpfile("fft_butterfly.vcd");$dumpvars(0,tb_fft_butterfly);
+reset_dut();
+run_case(0,0,0,0,65536,0,0);
+run_case(12003,-7001,-23001,11007,65536,0,1);
+run_case(12003,-7001,-23001,11007,-65536,0,1);
+run_case(12003,-7001,-23001,11007,0,65536,1);
+run_case(12003,-7001,-23001,11007,0,-65536,1);
+run_case(-32768,32767,23111,-17003,46341,-46341,1);
+run_case(1,-1,0,0,0,0,0);
+run_case(0,0,1,-1,65536,0,0);
+run_case(0,0,-1,1,65536,0,0);
+run_case(3,-3,0,0,0,0,0);
+run_case(1,-1,1,-1,1,0,0);
+run_case(131071,131071,131071,-131072,131071,-131072,1);
+run_case(-131072,-131072,-131072,131071,131071,-131072,1);
+run_case(131071,-131072,-131072,131071,-131072,131071,1);
+for(n=0;n<128;n=n+1)begin
+ra=random18();ia=random18();rb=random18();ib=random18();
+rw=random18();iw=random18();
+run_case(ra,ia,rb,ib,rw,iw,1);
+end
+@(negedge clk);start=1;a_re=123;b_re=456;w_re=65536;
+@(posedge clk);#1;
+if(!busy)$fatal(1,"BF: no inicio caso para reset ocupado");
+@(negedge clk);start=0;rst_n=0;
+#1;
+if(busy||done)$fatal(1,"BF: reset ocupado no aborta");
+repeat(3)@(negedge clk);
+rst_n=1;
+repeat(5)begin
+@(posedge clk);#1;
+if(busy||done)$fatal(1,"BF: resultado viejo reaparecio tras reset");
+end
+run_case(-32768,0,32767,0,65536,0,1);
+$display("PASS: MARIPOSA FFT, %0d casos bit exactos, latencia C3, reset y start ocupado",cases_checked);
+$finish;
+end
+initial begin#1000000;$fatal(1,"BF: timeout global");end
+endmodule
+module tb_entrega;
+tb_fft_butterfly prueba();
+endmodule
+`elsif ELDI_TB_FFT
+`timescale 1ns/1ps
+module tb_fft256_core;
+localparam real PI=3.1415926535897932384626433832795;
+localparam real CLOCK_NS=1000.0/27.0;
+localparam real TOLERANCE_LSB=8.0;
+localparam integer LIMIT_CYCLES=16384;
+reg clk=0;
+always#(CLOCK_NS/2.0)clk=!clk;
+reg rst_n=0,in_valid=0,start=0,rd_en=0;
+reg signed[15:0]in_sample=0;
+reg[7:0]rd_addr=0;
+wire in_ready,frame_loaded,busy,done,results_ready,rd_valid;
+wire signed[17:0]rd_re,rd_im;
+wire fault_latched;
+wire[3:0]fault_code;
+reg signed[15:0]proposed[0:255],accepted[0:255];
+real expected_re[0:255],expected_im[0:255];
+real max_error_re=0.0,max_error_im=0.0;
+integer accepted_count=0,cycle_no=0,compute_start_cycle=0;
+integer checked_frames=0,checked_bins=0;
+reg previous_done=0;
+reg expected_rd_valid;
+fft256_core dut(
+.clk(clk),.rst_n(rst_n),.in_valid(in_valid),.in_sample(in_sample),
+.in_ready(in_ready),.start(start),.frame_loaded(frame_loaded),
+.busy(busy),.done(done),.results_ready(results_ready),
+.rd_en(rd_en),.rd_addr(rd_addr),.rd_re(rd_re),.rd_im(rd_im),
+.rd_valid(rd_valid),.fault_latched(fault_latched),.fault_code(fault_code)
+);
+function automatic real abs_real(input real x);
+abs_real=(x<0.0)?-x:x;
+endfunction
+function automatic integer quantize16(input real x);
+integer q;
+begin
+q=(x>=0.0)?$rtoi(x+0.5):$rtoi(x-0.5);
+if(q>32767)q=32767;
+if(q<-32768)q=-32768;
+quantize16=q;
+end
+endfunction
+always@(posedge clk)begin
+cycle_no=cycle_no+1;
+expected_rd_valid=rst_n&&rd_en&&results_ready&&!busy&&
+!(in_valid&&in_ready)&&!start;
+if(!rst_n)accepted_count=0;
+else if(in_valid&&in_ready)begin
+if(accepted_count>=256)$fatal(1,"CORE: acepto mas de 256 muestras");
+accepted[accepted_count]=in_sample;
+accepted_count=accepted_count+1;
+end
+#1;
+if(rst_n)begin
+if(rd_valid!==expected_rd_valid)
+$fatal(1,"CORE: rd_valid no cumple latencia/gating de un ciclo");
+if(done&&previous_done)$fatal(1,"CORE: done dura mas de un ciclo");
+if(done&&(busy||!results_ready))
+$fatal(1,"CORE: done sin resultados estables");
+if(busy&&results_ready)$fatal(1,"CORE: resultados visibles durante calculo");
+previous_done=done;
+end else previous_done=0;
+end
+task automatic step_clock;
+begin@(posedge clk);#1;end
+endtask
+task automatic reset_dut;
+begin
+@(negedge clk);rst_n=0;in_valid=0;start=0;rd_en=0;
+repeat(3)@(negedge clk);
+rst_n=1;
+step_clock();
+if(busy||done||frame_loaded||results_ready||fault_latched||!in_ready)
+$fatal(1,"CORE: estado inicial incorrecto");
+end
+endtask
+task automatic make_frame(input integer family);
+integer n,value;
+reg[31:0]state;
+real x;
+begin
+state=32'h5eed2026;
+for(n=0;n<256;n=n+1)begin
+x=0.0;
+case(family)
+0:value=0;
+1:value=32767;
+2:value=-32768;
+3:value=-1;
+4:value=(n==0)?32767:0;
+5:value=(n==37)?-32768:0;
+6:begin x=12000.0*$sin(2.0*PI*7.0*n/256.0);value=quantize16(x);end
+7:begin x=12000.0*$cos(2.0*PI*11.0*n/256.0);value=quantize16(x);end
+8:begin
+x=8000.0*$sin(2.0*PI*5.0*n/256.0)+6000.0*$cos(2.0*PI*19.0*n/256.0);
+value=quantize16(x);
+end
+9:begin x=15000.0*$sin(2.0*PI*17.25*n/256.0);value=quantize16(x);end
+10:value=(n%2==0)?32767:-32768;
+11:value=(n%2==0)?-32768:32767;
+12:begin
+state=state*32'd1664525+32'd1013904223;
+value=$signed(state[31:16]);
+end
+13:case(n%4)
+0:value=0;1:value=32767;2:value=-32768;3:value=-1;
+endcase
+default:value=0;
+endcase
+proposed[n]=value;
+end
+end
+endtask
+task automatic load_frame;
+integer n,gap;
+begin
+@(negedge clk);accepted_count=0;in_valid=0;start=0;rd_en=0;
+for(n=0;n<256;n=n+1)begin
+@(negedge clk);
+if(!in_ready)$fatal(1,"CORE: backpressure inesperada al cargar %0d",n);
+in_valid=1;in_sample=proposed[n];rd_en=(n==0);
+step_clock();
+if(accepted_count!=n+1)$fatal(1,"CORE: handshake perdido en %0d",n);
+if(results_ready)$fatal(1,"CORE: nueva entrada no invalido resultado anterior");
+if(n<255&&frame_loaded)$fatal(1,"CORE: frame_loaded temprano");
+if(n%5==2)begin
+@(negedge clk);in_valid=0;rd_en=0;
+for(gap=0;gap<(n%3)+1;gap=gap+1)step_clock();
+end
+end
+@(negedge clk);in_valid=0;rd_en=0;
+if(!frame_loaded||in_ready||accepted_count!=256)
+$fatal(1,"CORE: bloque completo/ready incorrecto");
+in_valid=1;in_sample=16'h5a5a;rd_en=1;
+repeat(2)step_clock();
+if(accepted_count!=256||in_ready||fault_latched)
+$fatal(1,"CORE: entrada extra altero bloque completo");
+@(negedge clk);in_valid=0;rd_en=0;
+end
+endtask
+task automatic direct_dft;
+integer k,n,sample_value;
+real sr,si,theta;
+begin
+for(k=0;k<256;k=k+1)begin
+sr=0.0;si=0.0;
+for(n=0;n<256;n=n+1)begin
+sample_value=$signed(accepted[n]);
+theta=2.0*PI*k*n/256.0;
+sr=sr+sample_value*$cos(theta);
+si=si-sample_value*$sin(theta);
+end
+expected_re[k]=sr/256.0;
+expected_im[k]=si/256.0;
+end
+end
+endtask
+task automatic begin_fft;
+begin
+@(negedge clk);start=1;rd_en=1;
+step_clock();compute_start_cycle=cycle_no;
+if(!busy||frame_loaded||results_ready||fault_latched)
+$fatal(1,"CORE: start valido no inicio el calculo");
+@(negedge clk);start=0;
+in_valid=1;in_sample=16'h7fff;
+repeat(4)begin
+step_clock();
+if(in_ready||rd_valid||accepted_count!=256||fault_latched)
+$fatal(1,"CORE: entrada/lectura durante busy no fue ignorada");
+end
+@(negedge clk);in_valid=0;rd_en=0;
+end
+endtask
+task automatic finish_fft;
+integer latency;
+begin
+while(!done&&cycle_no-compute_start_cycle<=LIMIT_CYCLES)begin
+step_clock();
+if(fault_latched)$fatal(1,"CORE: fault inesperado %0d",fault_code);
+if(!busy&&!done)$fatal(1,"CORE: paro sin done");
+end
+latency=cycle_no-compute_start_cycle;
+if(!done||latency>LIMIT_CYCLES)
+$fatal(1,"CORE: latencia %0d supera %0d ciclos",latency,LIMIT_CYCLES);
+if(!results_ready||busy||frame_loaded)
+$fatal(1,"CORE: banderas finales incorrectas");
+$display("CORE: calculo termino en %0d ciclos",latency);
+end
+endtask
+task automatic check_results(input integer family);
+integer k,got_re,got_im;
+real er,ei;
+begin
+for(k=0;k<256;k=k+1)begin
+@(negedge clk);rd_en=1;rd_addr=k;
+step_clock();
+if(!rd_valid||(^rd_re===1'bx)||(^rd_im===1'bx))
+$fatal(1,"CORE: resultado desconocido/invalido bin %0d",k);
+got_re=$signed(rd_re);got_im=$signed(rd_im);
+er=abs_real(got_re-expected_re[k]);ei=abs_real(got_im-expected_im[k]);
+if(er>max_error_re)max_error_re=er;
+if(ei>max_error_im)max_error_im=ei;
+if(er>TOLERANCE_LSB||ei>TOLERANCE_LSB)
+$fatal(1,"CORE familia%0d bin%0d: got=(%0d,%0d), DFT/N=(%0.6f,%0.6f), error=(%0.6f,%0.6f)",
+family,k,got_re,got_im,expected_re[k],expected_im[k],er,ei);
+checked_bins=checked_bins+1;
+end
+@(negedge clk);rd_en=0;
+repeat(3)begin
+step_clock();
+if(done||!results_ready||busy||rd_valid)
+$fatal(1,"CORE: resultado no permanece disponible o done largo");
+end
+checked_frames=checked_frames+1;
+$display("PASS: CORE familia %0d, 256 bins complejos en orden natural",family);
+end
+endtask
+task automatic pulse_start;
+begin
+@(negedge clk);start=1;
+step_clock();
+@(negedge clk);start=0;
+end
+endtask
+task automatic expect_fault(input[3:0]code);
+integer elapsed;
+begin
+elapsed=0;
+while(!fault_latched&&elapsed<5)begin step_clock();elapsed=elapsed+1;end
+if(!fault_latched||fault_code!==code)
+$fatal(1,"CORE: fault %0d esperado, got %0d",code,fault_code);
+@(negedge clk);in_valid=1;in_sample=123;rd_en=1;
+repeat(10)begin
+step_clock();
+if(!fault_latched||fault_code!==code||in_ready||busy||done||results_ready||rd_valid)
+$fatal(1,"CORE: fault no queda retenido/abortado hasta reset");
+end
+@(negedge clk);in_valid=0;rd_en=0;
+end
+endtask
+integer family,n;
+initial begin
+$dumpfile("fft256_core.vcd");$dumpvars(1,tb_fft256_core);
+reset_dut();
+@(negedge clk);rd_en=1;
+repeat(3)step_clock();
+@(negedge clk);rd_en=0;
+for(family=0;family<14;family=family+1)begin
+make_frame(family);load_frame();direct_dft();begin_fft();
+finish_fft();check_results(family);
+end
+reset_dut();
+for(n=0;n<23;n=n+1)begin
+@(negedge clk);in_valid=1;in_sample=n*173;
+step_clock();
+end
+reset_dut();
+if(accepted_count!=0)$fatal(1,"CORE: reset no borro carga parcial");
+pulse_start();expect_fault(4'd1);
+reset_dut();
+for(n=0;n<255;n=n+1)begin
+@(negedge clk);in_valid=1;in_sample=n-128;
+step_clock();
+end
+@(negedge clk);in_sample=32767;start=1;
+step_clock();
+@(negedge clk);start=0;in_valid=0;
+expect_fault(4'd1);
+reset_dut();
+make_frame(7);load_frame();begin_fft();
+pulse_start();expect_fault(4'd2);
+reset_dut();
+make_frame(12);load_frame();begin_fft();
+repeat(20)step_clock();
+reset_dut();
+repeat(20)begin
+step_clock();
+if(busy||done||results_ready||fault_latched)
+$fatal(1,"CORE: calculo anterior reaparecio tras reset");
+end
+make_frame(0);load_frame();direct_dft();begin_fft();finish_fft();check_results(0);
+$display("PASS: FFT256, %0d bloques/%0d bins; max error Re=%0.6f Im=%0.6f LSB; controles y recuperacion",
+checked_frames,checked_bins,max_error_re,max_error_im);
+$finish;
+end
+initial begin#20000000;$fatal(1,"CORE: timeout global");end
+endmodule
+module tb_entrega;
+tb_fft256_core prueba();
+endmodule
+`elsif ELDI_TB_MAGNITUD
+`timescale 1ns/1ps
+module tb_fft_magnitude;
+localparam real CLOCK_NS=1000.0/27.0;
+reg clk=1'b0;
+always#(CLOCK_NS/2.0)clk=~clk;
+reg rst_n=1'b0;
+reg start=1'b0;
+reg signed[17:0]in_re=0,in_im=0;
+wire busy,done;
+wire[17:0]magnitude;
+reg[31:0]rng=32'h2026a18f;
+integer cases_checked=0;
+reg previous_done=1'b0;
+reg[17:0]previous_magnitude=0;
+fft_magnitude dut(
+.clk(clk),.rst_n(rst_n),.start(start),
+.in_re(in_re),.in_im(in_im),.busy(busy),
+.done(done),.magnitude(magnitude)
+);
+function automatic[17:0]reference_root(
+input logic signed[17:0]real_part,
+input logic signed[17:0]imag_part
+);
+longint signed real64,imag64;
+longint unsigned sum64,root64,trial64;
+integer bit_index;
+begin
+real64=real_part;
+imag64=imag_part;
+sum64=real64*real64+imag64*imag64;
+root64=0;
+for(bit_index=17;bit_index>=0;bit_index=bit_index-1)begin
+trial64=root64|(64'd1<<bit_index);
+if(trial64*trial64<=sum64)
+root64=trial64;
+end
+reference_root=root64[17:0];
+end
+endfunction
+function automatic signed[17:0]random18;
+begin
+rng=rng*32'd1664525+32'd1013904223;
+random18=$signed(rng[31:14]);
+end
+endfunction
+always@(posedge clk)begin
+#1;
+if(!rst_n)begin
+previous_done=1'b0;
+previous_magnitude=0;
+end else begin
+if((done===1'bx)||(busy===1'bx))
+$fatal(1,"MAG: control desconocido");
+if(done&&previous_done)
+$fatal(1,"MAG: done dura mas de un ciclo");
+if(done&&busy)
+$fatal(1,"MAG: done no desactiva busy");
+if(!done&&magnitude!==previous_magnitude)
+$fatal(1,"MAG: salida cambia fuera del flanco de resultado");
+previous_done=done;
+previous_magnitude=magnitude;
+end
+end
+task automatic step_clock;
+begin@(posedge clk);#1;end
+endtask
+task automatic reset_dut;
+begin
+@(negedge clk);rst_n=0;start=0;
+repeat(3)@(negedge clk);
+rst_n=1;
+step_clock();
+if(busy||done||magnitude!==18'd0)
+$fatal(1,"MAG: reset no devuelve reposo y magnitud cero");
+end
+endtask
+task automatic check_exact_result(
+input logic signed[17:0]real_part,
+input logic signed[17:0]imag_part
+);
+longint signed real64,imag64;
+longint unsigned sum64,magnitude64,next64;
+reg[17:0]expected;
+begin
+expected=reference_root(real_part,imag_part);
+if(magnitude!==expected)
+$fatal(1,"MAG caso %0d (%0d,%0d): got %0d, esperado %0d",
+cases_checked,real_part,imag_part,magnitude,expected);
+real64=real_part;
+imag64=imag_part;
+sum64=real64*real64+imag64*imag64;
+magnitude64=$unsigned(magnitude);
+next64=magnitude64+64'd1;
+if((magnitude64*magnitude64>sum64)||
+(next64*next64<=sum64))
+$fatal(1,"MAG: incumple M^2 <= S < (M+1)^2");
+cases_checked=cases_checked+1;
+end
+endtask
+task automatic run_case(
+input logic signed[17:0]real_part,
+input logic signed[17:0]imag_part,
+input bit inject_busy_start
+);
+integer elapsed;
+reg[17:0]held_result;
+begin
+held_result=magnitude;
+@(negedge clk);
+if(busy)$fatal(1,"MAG: inicio de caso con DUT ocupado");
+in_re=real_part;in_im=imag_part;start=1;
+step_clock();
+if(!busy||done||magnitude!==held_result)
+$fatal(1,"MAG: captura incorrecta en C0");
+@(negedge clk);
+in_re=18'sh20000;in_im=18'sh1ffff;
+start=inject_busy_start;
+for(elapsed=1;elapsed<=20;elapsed=elapsed+1)begin
+step_clock();
+if(elapsed<20)begin
+if(!busy||done||magnitude!==held_result)
+$fatal(1,"MAG: latencia/retencion incorrecta en C%0d",elapsed);
+end else begin
+if(busy||!done)
+$fatal(1,"MAG: resultado debe estar exactamente en C20");
+check_exact_result(real_part,imag_part);
+end
+@(negedge clk);start=0;
+end
+held_result=magnitude;
+repeat(3)begin
+step_clock();
+if(busy||done||magnitude!==held_result)
+$fatal(1,"MAG: start ocupado quedo en cola o salida no retenida");
+end
+end
+endtask
+task automatic abort_operation(input integer completed_cycles);
+integer elapsed;
+begin
+@(negedge clk);in_re=18'sh20000;in_im=18'sh20000;start=1;
+step_clock();
+if(!busy)$fatal(1,"MAG: no inicio operacion para abortar");
+@(negedge clk);start=0;
+for(elapsed=0;elapsed<completed_cycles;elapsed=elapsed+1)begin
+step_clock();
+if(!busy||done)$fatal(1,"MAG: termino antes del reset de prueba");
+end
+#3;rst_n=0;
+#1;
+if(busy||done||magnitude!==18'd0)
+$fatal(1,"MAG: reset asincrono no aborta");
+repeat(3)@(negedge clk);
+rst_n=1;
+repeat(23)begin
+step_clock();
+if(busy||done||magnitude!==18'd0)
+$fatal(1,"MAG: resultado antiguo reaparecio despues del reset");
+end
+run_case(18'sd3,18'sd4,1'b1);
+end
+endtask
+task automatic held_start_restarts;
+integer elapsed;
+begin
+@(negedge clk);in_re=3;in_im=4;start=1;
+step_clock();
+@(negedge clk);in_re=5;in_im=12;
+for(elapsed=1;elapsed<=20;elapsed=elapsed+1)begin
+step_clock();
+if(elapsed<20&&(!busy||done))
+$fatal(1,"MAG: start retenido altero primera operacion");
+end
+if(busy||!done)$fatal(1,"MAG: primera operacion retenida no termino");
+check_exact_result(18'sd3,18'sd4);
+step_clock();
+if(!busy||done)$fatal(1,"MAG: start alto en IDLE no inicia otra operacion");
+@(negedge clk);start=0;
+for(elapsed=1;elapsed<=20;elapsed=elapsed+1)begin
+step_clock();
+if(elapsed<20&&(!busy||done))
+$fatal(1,"MAG: latencia de segunda operacion retenida incorrecta");
+end
+if(busy||!done)$fatal(1,"MAG: segunda operacion retenida no termino");
+check_exact_result(18'sd5,18'sd12);
+repeat(3)begin
+step_clock();
+if(busy||done)$fatal(1,"MAG: tercera operacion no solicitada");
+end
+end
+endtask
+integer index;
+reg signed[17:0]random_re,random_im;
+initial begin
+$dumpfile("fft_magnitude.vcd");
+$dumpvars(0,tb_fft_magnitude);
+reset_dut();
+run_case(0,0,0);
+run_case(1,0,1);
+run_case(-1,0,1);
+run_case(0,1,1);
+run_case(0,-1,1);
+run_case(1,-1,1);
+run_case(2,2,1);
+run_case(3,4,1);
+run_case(-3,-4,1);
+run_case(-3,4,1);
+run_case(511,32,1);
+run_case(511,31,1);
+run_case(512,0,1);
+run_case(65535,1,1);
+run_case(65536,0,1);
+run_case(18'sh1ffff,0,1);
+run_case(18'sh20000,0,1);
+run_case(18'sh1ffff,18'sh1ffff,1);
+run_case(18'sh20000,18'sh1ffff,1);
+run_case(18'sh20000,18'sh20000,1);
+if(magnitude!==18'd185363)
+$fatal(1,"MAG: extremos negativos deben producir 185363");
+for(index=0;index<256;index=index+1)begin
+random_re=random18();random_im=random18();
+run_case(random_re,random_im,1'b1);
+end
+abort_operation(0);
+abort_operation(1);
+abort_operation(9);
+abort_operation(19);
+held_start_restarts();
+$display("PASS: MAGNITUD FFT, %0d casos exactos, propiedad floor, C20, signos, reset y start ocupado",cases_checked);
+$finish;
+end
+initial begin#1000000;$fatal(1,"MAG: timeout global");end
+endmodule
+module tb_entrega;
+tb_fft_magnitude prueba();
+endmodule
+`elsif ELDI_TB_PROCESADOR
+`timescale 1ns/1ps
+module tb_signal_processor;
+localparam real CLOCK_NS=1000.0/27.0;
+localparam real PI=3.1415926535897932384626433832795;
+localparam real MAG_TOLERANCE_LSB=9.0;
+localparam integer FRAME_DEADLINE=20000;
+localparam integer MODE_OFF=0,MODE_SUCCESS=1,MODE_ABORT=2,MODE_OVERLOAD=3;
+reg clk=0;
+always#(CLOCK_NS/2.0)clk=!clk;
+reg rst_n=0,sample_valid=0;
+reg signed[15:0]sample_signed=0;
+wire frame_begin;
+wire[31:0]frame_seq;
+wire wave_valid;
+wire[7:0]wave_index;
+wire signed[15:0]wave_sample;
+wire spectrum_valid;
+wire[7:0]spectrum_index;
+wire[17:0]spectrum_mag;
+wire frame_done,busy,fault_latched;
+wire[3:0]fault_code;
+signal_processor dut(
+.clk(clk),.rst_n(rst_n),.sample_valid(sample_valid),
+.sample_signed(sample_signed),.frame_begin(frame_begin),
+.frame_seq(frame_seq),.wave_valid(wave_valid),.wave_index(wave_index),
+.wave_sample(wave_sample),.spectrum_valid(spectrum_valid),
+.spectrum_index(spectrum_index),.spectrum_mag(spectrum_mag),
+.frame_done(frame_done),.busy(busy),.fault_latched(fault_latched),
+.fault_code(fault_code)
+);
+reg signed[15:0]actual_input[0:2][0:255];
+real ideal_magnitude[0:2][0:128];
+integer mode=MODE_OFF,frame_limit=3;
+integer cycle_no=0,physical_count=0,last_sample_cycle=-1;
+integer active_frame=-1,frame_start_cycle=0,completed_frames=0;
+integer wave_count=0,spectrum_count=0,phase_waves=0,phase_bins=0;
+integer successful_frames_total=0,maximum_frame_cycles=0;
+real maximum_magnitude_error=0.0;
+reg check_cadence=0,previous_begin=0,previous_done=0;
+integer input_frame,input_index;
+integer got_magnitude,latency;
+real magnitude_error;
+function automatic real abs_real(input real x);
+abs_real=(x<0.0)?-x:x;
+endfunction
+function automatic integer quantize16(input real x);
+integer q;
+begin
+q=(x>=0.0)?$rtoi(x+0.5):$rtoi(x-0.5);
+if(q>32767)q=32767;
+if(q<-32768)q=-32768;
+quantize16=q;
+end
+endfunction
+function automatic signed[15:0]source_word(input integer family,n);
+begin
+case(family%3)
+0:source_word=16'sd12000;
+1:source_word=quantize16(8000.0*$cos(2.0*PI*4.0*n/256.0));
+2:source_word=quantize16(16000.0*$sin(2.0*PI*9.0*n/256.0));
+endcase
+end
+endfunction
+task automatic build_dft_magnitude(input integer frame_number);
+integer k,n,x;
+real r,i,theta;
+begin
+for(k=0;k<=128;k=k+1)begin
+r=0.0;i=0.0;
+for(n=0;n<256;n=n+1)begin
+x=$signed(actual_input[frame_number][n]);
+theta=2.0*PI*k*n/256.0;
+r=r+x*$cos(theta);
+i=i-x*$sin(theta);
+end
+r=r/256.0;i=i/256.0;
+ideal_magnitude[frame_number][k]=$sqrt(r*r+i*i);
+end
+end
+endtask
+always@(posedge clk)begin
+cycle_no=cycle_no+1;
+if(!rst_n)begin
+physical_count=0;
+last_sample_cycle=-1;
+active_frame=-1;
+completed_frames=0;
+wave_count=0;spectrum_count=0;phase_waves=0;phase_bins=0;
+previous_begin=0;previous_done=0;
+end else if(sample_valid)begin
+if(check_cadence&&last_sample_cycle>=0&&cycle_no-last_sample_cycle!=135)
+$fatal(1,"PROCESSOR: entrada no mantiene 135 ciclos; intervalo=%0d",cycle_no-last_sample_cycle);
+last_sample_cycle=cycle_no;
+if(mode==MODE_SUCCESS)begin
+input_frame=physical_count/256;
+input_index=physical_count%256;
+if(input_frame>=frame_limit||input_frame>2)
+$fatal(1,"PROCESSOR: mas muestras que los bloques esperados");
+actual_input[input_frame][input_index]=sample_signed;
+if(input_index==255)build_dft_magnitude(input_frame);
+end
+physical_count=physical_count+1;
+end
+#1;
+if(rst_n)begin
+if(frame_begin&&previous_begin)
+$fatal(1,"PROCESSOR: frame_begin dura mas de un ciclo");
+if(frame_done&&previous_done)
+$fatal(1,"PROCESSOR: frame_done dura mas de un ciclo");
+previous_begin=frame_begin;
+previous_done=frame_done;
+if(fault_latched&&(frame_begin||wave_valid||spectrum_valid||frame_done))
+$fatal(1,"PROCESSOR: publico strobes despues de un fault retenido");
+if(mode==MODE_OVERLOAD&&frame_done)
+$fatal(1,"PROCESSOR: sobrecarga publico un bloque incompleto");
+if(mode==MODE_SUCCESS)begin
+if(fault_latched)$fatal(1,"PROCESSOR: fallo inesperado %0d",fault_code);
+if(frame_begin)begin
+if(active_frame>=0)$fatal(1,"PROCESSOR: superposicion de bloques publicados");
+if(completed_frames>=frame_limit||frame_seq!==completed_frames)
+$fatal(1,"PROCESSOR: secuencia %0d; esperada %0d",frame_seq,completed_frames);
+if(physical_count<(completed_frames+1)*256)
+$fatal(1,"PROCESSOR: frame_begin antes de capturar 256 muestras");
+active_frame=completed_frames;
+frame_start_cycle=cycle_no;
+wave_count=0;spectrum_count=0;
+end
+if(active_frame>=0&&frame_seq!==active_frame)
+$fatal(1,"PROCESSOR: frame_seq cambio durante procesamiento");
+if(wave_valid)begin
+if(active_frame<0||wave_count>=256||wave_index!==wave_count)
+$fatal(1,"PROCESSOR: indice/orden de traza incorrecto idx=%0d esperado=%0d",wave_index,wave_count);
+if(wave_sample!==actual_input[active_frame][wave_count])
+$fatal(1,"PROCESSOR: traza frame%0d idx%0d got=%0d esperado=%0d",
+active_frame,wave_count,wave_sample,actual_input[active_frame][wave_count]);
+wave_count=wave_count+1;
+phase_waves=phase_waves+1;
+end
+if(spectrum_valid)begin
+if(active_frame<0||wave_count!=256||spectrum_count>128||
+spectrum_index!==spectrum_count)
+$fatal(1,"PROCESSOR: indice/orden espectral incorrecto idx=%0d esperado=%0d",spectrum_index,spectrum_count);
+if(^spectrum_mag===1'bx)
+$fatal(1,"PROCESSOR: magnitud desconocida");
+got_magnitude=spectrum_mag;
+magnitude_error=abs_real(got_magnitude-ideal_magnitude[active_frame][spectrum_count]);
+if(magnitude_error>maximum_magnitude_error)
+maximum_magnitude_error=magnitude_error;
+if(magnitude_error>MAG_TOLERANCE_LSB)
+$fatal(1,"PROCESSOR: frame%0d bin%0d mag=%0d DFTideal=%0.6f error=%0.6f",
+active_frame,spectrum_count,got_magnitude,
+ideal_magnitude[active_frame][spectrum_count],magnitude_error);
+if(spectrum_index==128&&!frame_done)
+$fatal(1,"PROCESSOR: bin128 debe coincidir con frame_done");
+spectrum_count=spectrum_count+1;
+phase_bins=phase_bins+1;
+end
+if(frame_done)begin
+if(active_frame<0||!spectrum_valid||spectrum_index!=128||
+spectrum_count!=129||wave_count!=256)
+$fatal(1,"PROCESSOR: frame_done sin salida completa");
+latency=cycle_no-frame_start_cycle;
+if(latency>FRAME_DEADLINE)
+$fatal(1,"PROCESSOR: latencia %0d excede %0d ciclos",latency,FRAME_DEADLINE);
+if(latency>maximum_frame_cycles)maximum_frame_cycles=latency;
+$display("PROCESSOR: frame%0d, 256 muestras, 129 bins, %0d ciclos",active_frame,latency);
+completed_frames=completed_frames+1;
+active_frame=-1;
+end
+if(active_frame>=0&&cycle_no-frame_start_cycle>FRAME_DEADLINE)
+$fatal(1,"PROCESSOR: bloque excedio plazo sin frame_done");
+end
+end
+end
+task automatic step_clock;
+begin@(posedge clk);#2;end
+endtask
+task automatic reset_dut;
+begin
+mode=MODE_OFF;check_cadence=0;
+@(negedge clk);rst_n=0;sample_valid=0;sample_signed=0;
+repeat(3)@(negedge clk);
+rst_n=1;
+step_clock();
+if(busy||fault_latched||frame_begin||wave_valid||spectrum_valid||frame_done)
+$fatal(1,"PROCESSOR: reset no dejo salidas en reposo");
+end
+endtask
+task automatic send_stream(input integer frames,first_family);
+integer f,n;
+begin
+check_cadence=1;
+for(f=0;f<frames;f=f+1)begin
+for(n=0;n<256;n=n+1)begin
+@(negedge clk);
+sample_signed=source_word(first_family+f,n);sample_valid=1;
+@(negedge clk);sample_valid=0;
+repeat(133)@(negedge clk);
+end
+end
+check_cadence=0;
+end
+endtask
+task automatic wait_complete(input integer target);
+integer elapsed;
+begin
+elapsed=0;
+while(completed_frames<target&&elapsed<24000)begin
+@(negedge clk);elapsed=elapsed+1;
+end
+if(completed_frames!=target||phase_waves!=256*target||phase_bins!=129*target||
+physical_count!=256*target||active_frame!=-1)
+$fatal(1,"PROCESSOR: cuenta incompleta frames%0d wave%0d bins%0d muestras%0d",
+completed_frames,phase_waves,phase_bins,physical_count);
+repeat(3)step_clock();
+if(busy||fault_latched)$fatal(1,"PROCESSOR: no volvio a reposo tras terminar");
+successful_frames_total=successful_frames_total+target;
+end
+endtask
+task automatic wait_any_wave;
+integer elapsed;
+begin
+elapsed=0;
+while(!wave_valid&&elapsed<2000)begin@(negedge clk);elapsed=elapsed+1;end
+if(!wave_valid)$fatal(1,"PROCESSOR: no aparecio traza para reset durante copia");
+end
+endtask
+task automatic wait_last_wave;
+integer elapsed;
+begin
+elapsed=0;
+while(!(wave_valid&&wave_index==255)&&elapsed<2000)begin
+@(negedge clk);elapsed=elapsed+1;
+end
+if(!(wave_valid&&wave_index==255))
+$fatal(1,"PROCESSOR: no aparecio ultima muestra para reset durante FFT");
+end
+endtask
+task automatic check_no_old_frame;
+integer elapsed;
+begin
+for(elapsed=0;elapsed<FRAME_DEADLINE;elapsed=elapsed+1)begin
+step_clock();
+if(frame_begin||wave_valid||spectrum_valid||frame_done||busy||fault_latched)
+$fatal(1,"PROCESSOR: reaparecio operacion anterior al reset");
+end
+end
+endtask
+integer n;
+initial begin
+$dumpfile("signal_processor.vcd");
+$dumpvars(1,tb_signal_processor);
+reset_dut();frame_limit=3;mode=MODE_SUCCESS;
+send_stream(3,0);
+wait_complete(3);
+$display("PASS: PROCESSOR tres bloques continuos, 768 muestras/387 bins, CONV nominal cada135 ciclos");
+reset_dut();mode=MODE_ABORT;
+send_stream(1,1);wait_any_wave();
+if(wave_index==255)$fatal(1,"PROCESSOR: reset de copia llego demasiado tarde");
+reset_dut();check_no_old_frame();
+$display("PASS: PROCESSOR reset durante copia, sin publicacion antigua");
+mode=MODE_ABORT;
+send_stream(1,2);wait_last_wave();
+repeat(20)step_clock();
+reset_dut();check_no_old_frame();
+$display("PASS: PROCESSOR reset durante FFT, sin publicacion antigua");
+frame_limit=1;mode=MODE_SUCCESS;
+send_stream(1,2);wait_complete(1);
+$display("PASS: PROCESSOR bloque fresco despues de reset de calculo");
+reset_dut();mode=MODE_OVERLOAD;
+@(negedge clk);sample_valid=1;
+for(n=0;n<900;n=n+1)begin
+sample_signed=(n*97)^16'h5a5a;
+@(negedge clk);
+end
+sample_valid=0;
+repeat(20)step_clock();
+if(!fault_latched||fault_code!==4'd1)
+$fatal(1,"PROCESSOR: sobrecarga no produjo fault1, got%0d",fault_code);
+repeat(300)begin
+step_clock();
+if(!fault_latched||fault_code!==4'd1||frame_begin||wave_valid||
+spectrum_valid||frame_done||busy)
+$fatal(1,"PROCESSOR: fault de sobrecarga no quedo retenido/abortado");
+end
+$display("PASS: PROCESSOR sobrecarga detectada, parada retenida sin publicar bloque parcial");
+reset_dut();frame_limit=1;mode=MODE_SUCCESS;
+send_stream(1,0);wait_complete(1);
+$display("PASS: PROCESSOR recuperacion de sobrecarga por reset");
+$display("PASS: SIGNAL_PROCESSOR integracion, %0d bloques completos; latencia maxima%0d ciclos, error magnitud%0.6f LSB",
+successful_frames_total,maximum_frame_cycles,maximum_magnitude_error);
+$finish;
+end
+initial begin#20000000;$fatal(1,"PROCESSOR: timeout global20ms");end
+endmodule
+module tb_entrega;
+tb_signal_processor prueba();
+endmodule
+`elsif ELDI_TB_BUFFER
+`timescale 1ns/1ps
+module tb_display_buffer;
+localparam real WR_PERIOD_NS=1000.0/27.0;
+localparam real PIX_PERIOD_NS=1000.0/74.25;
+reg wr_clk=0,pix_clk=0;
+always#(WR_PERIOD_NS/2.0)wr_clk=~wr_clk;
+initial begin
+#2.731;
+forever#(PIX_PERIOD_NS/2.0)pix_clk=~pix_clk;
+end
+reg wr_rst_n=0,pix_rst_n=0;
+reg frame_start=0;
+reg frame_begin=0,wave_valid=0,spectrum_valid=0,frame_done=0;
+reg[31:0]frame_seq=0;
+reg[7:0]wave_index=0,spectrum_index=0;
+reg signed[15:0]wave_sample=0;
+reg[17:0]spectrum_mag=0;
+wire wr_busy,wr_fault_latched,front_valid;
+wire[31:0]front_seq;
+reg rd_en=0;
+reg[7:0]rd_wave_addr=0,rd_spectrum_addr=0;
+wire rd_valid;
+wire signed[15:0]rd_wave_prev,rd_wave_sample;
+wire[17:0]rd_spectrum_mag;
+integer checked_reads=0,checked_frames=0,observed_swaps=0;
+reg previous_front_valid=0;
+reg[31:0]previous_front_seq=0;
+reg previous_fault=0;
+reg expected_rd_valid;
+reg boundary_at_edge;
+display_buffer dut(
+.wr_clk(wr_clk),.wr_rst_n(wr_rst_n),.pix_clk(pix_clk),
+.pix_rst_n(pix_rst_n),.frame_start(frame_start),
+.frame_begin(frame_begin),.frame_seq(frame_seq),
+.wave_valid(wave_valid),.wave_index(wave_index),.wave_sample(wave_sample),
+.spectrum_valid(spectrum_valid),.spectrum_index(spectrum_index),
+.spectrum_mag(spectrum_mag),.frame_done(frame_done),
+.wr_busy(wr_busy),.wr_fault_latched(wr_fault_latched),
+.front_valid(front_valid),.front_seq(front_seq),
+.rd_en(rd_en),.rd_wave_addr(rd_wave_addr),.rd_spectrum_addr(rd_spectrum_addr),
+.rd_valid(rd_valid),.rd_wave_prev(rd_wave_prev),
+.rd_wave_sample(rd_wave_sample),.rd_spectrum_mag(rd_spectrum_mag)
+);
+function automatic signed[15:0]expected_wave(input integer identity,index);
+begin
+case(index)
+0:expected_wave=16'h8000;
+1:expected_wave=16'h7fff;
+254:expected_wave=16'hffff;
+255:expected_wave=16'h0001^identity;
+default:expected_wave=(index*257)^(identity*16'h1337)^16'ha55a;
+endcase
+end
+endfunction
+function automatic[17:0]expected_spectrum(input integer identity,index);
+begin
+if(index>128)
+expected_spectrum=18'd0;
+else if(index==0)
+expected_spectrum=18'd185363+identity;
+else if(index==128)
+expected_spectrum=18'h3ffff-identity;
+else
+expected_spectrum=(identity*17777+index*1387)&18'h3ffff;
+end
+endfunction
+always@(posedge pix_clk)begin
+expected_rd_valid=pix_rst_n&&rd_en&&front_valid;
+boundary_at_edge=frame_start;
+#1;
+if(!pix_rst_n)begin
+previous_front_valid=0;
+previous_front_seq=0;
+end else begin
+if(rd_valid!==expected_rd_valid)
+$fatal(1,"DISPLAY: rd_valid no cumple latencia de un flanco");
+if((front_valid!==previous_front_valid)||
+(front_seq!==previous_front_seq))begin
+if(!boundary_at_edge)
+$fatal(1,"DISPLAY: frente cambio fuera de frame_start");
+if(!front_valid)
+$fatal(1,"DISPLAY: frente valido desaparecio sin reset");
+observed_swaps=observed_swaps+1;
+end
+previous_front_valid=front_valid;
+previous_front_seq=front_seq;
+end
+end
+always@(posedge wr_clk)begin
+#1;
+if(!wr_rst_n)previous_fault=0;
+else begin
+if(previous_fault&&!wr_fault_latched)
+$fatal(1,"DISPLAY: fallo no retenido hasta reset");
+if(wr_fault_latched&&!wr_busy)
+$fatal(1,"DISPLAY: fallo no indica escritor indisponible");
+previous_fault=wr_fault_latched;
+end
+end
+task automatic wr_step;
+begin@(posedge wr_clk);#1;end
+endtask
+task automatic pix_step;
+begin@(posedge pix_clk);#1;end
+endtask
+task automatic reset_both;
+begin
+@(negedge wr_clk);
+wr_rst_n=0;pix_rst_n=0;
+frame_begin=0;wave_valid=0;spectrum_valid=0;frame_done=0;
+frame_start=0;rd_en=0;
+repeat(5)@(negedge wr_clk);
+wr_rst_n=1;
+@(negedge pix_clk);pix_rst_n=1;
+repeat(5)wr_step();
+repeat(5)pix_step();
+if(wr_busy||wr_fault_latched||front_valid||rd_valid)
+$fatal(1,"DISPLAY: reset coordinado no devuelve estado inicial");
+end
+endtask
+task automatic wait_writer_free;
+integer elapsed;
+begin
+elapsed=0;
+while(wr_busy&&elapsed<20)begin wr_step();elapsed=elapsed+1;end
+if(wr_busy||wr_fault_latched)
+$fatal(1,"DISPLAY: ACK no libero el banco anterior");
+end
+endtask
+task automatic drive_frame(
+input integer identity,
+input bit wave0_with_begin,
+input bit spectrum0_with_last_wave
+);
+integer index;
+begin
+@(negedge wr_clk);
+frame_begin=1;frame_seq=identity;
+wave_valid=wave0_with_begin;wave_index=0;
+wave_sample=expected_wave(identity,0);
+spectrum_valid=0;frame_done=0;
+wr_step();
+@(negedge wr_clk);frame_begin=0;
+for(index=wave0_with_begin?1:0;index<256;index=index+1)begin
+wave_valid=1;wave_index=index;
+wave_sample=expected_wave(identity,index);
+spectrum_valid=spectrum0_with_last_wave&&(index==255);
+spectrum_index=0;spectrum_mag=expected_spectrum(identity,0);
+wr_step();
+@(negedge wr_clk);
+end
+wave_valid=0;
+for(index=spectrum0_with_last_wave?1:0;index<=128;index=index+1)begin
+spectrum_valid=1;spectrum_index=index;
+spectrum_mag=expected_spectrum(identity,index);
+frame_done=(index==128);
+wr_step();
+@(negedge wr_clk);
+end
+spectrum_valid=0;frame_done=0;
+end
+endtask
+task automatic swap_at_boundary(input integer identity);
+begin
+repeat(6)pix_step();
+@(negedge pix_clk);frame_start=1;
+pix_step();
+if(!front_valid||front_seq!==identity)
+$fatal(1,"DISPLAY: swap esperado seq%0d, obtenido valid%0d seq%0d",
+identity,front_valid,front_seq);
+@(negedge pix_clk);frame_start=0;
+end
+endtask
+task automatic check_read_data(input integer identity,wave_address,spectrum_address);
+reg signed[15:0]expected_previous;
+begin
+expected_previous=expected_wave(identity,(wave_address==0)?0:wave_address-1);
+if(!rd_valid||(rd_wave_prev!==expected_previous)||
+(rd_wave_sample!==expected_wave(identity,wave_address))||
+(rd_spectrum_mag!==expected_spectrum(identity,spectrum_address)))
+$fatal(1,"DISPLAY: datos seq%0d wave%0d spec%0d: prev=%h sample=%h mag=%h",
+identity,wave_address,spectrum_address,
+rd_wave_prev,rd_wave_sample,rd_spectrum_mag);
+checked_reads=checked_reads+1;
+end
+endtask
+task automatic read_frame(input integer identity);
+integer index;
+reg[63:0]observed_hash,expected_hash,expected_word;
+reg[15:0]previous_word,sample_word;
+reg[17:0]magnitude_word;
+begin
+observed_hash=64'hcbf29ce484222325;
+expected_hash=64'hcbf29ce484222325;
+for(index=0;index<256;index=index+1)begin
+@(negedge pix_clk);
+rd_en=1;rd_wave_addr=index;rd_spectrum_addr=index;
+pix_step();
+if(!front_valid||front_seq!==identity)
+$fatal(1,"DISPLAY: identidad del frente cambio durante lectura");
+check_read_data(identity,index,index);
+observed_hash=(observed_hash*64'd1099511628211)^
+{14'd0,rd_wave_prev,rd_wave_sample,rd_spectrum_mag};
+previous_word=expected_wave(identity,(index==0)?0:index-1);
+sample_word=expected_wave(identity,index);
+magnitude_word=expected_spectrum(identity,index);
+expected_word={14'd0,previous_word,sample_word,magnitude_word};
+expected_hash=(expected_hash*64'd1099511628211)^expected_word;
+end
+@(negedge pix_clk);rd_en=0;
+pix_step();
+if(rd_valid||observed_hash!==expected_hash)
+$fatal(1,"DISPLAY: hash o fin de lectura incorrecto");
+checked_frames=checked_frames+1;
+$display("DISPLAY: seq%0d hash=%h,256pares wave y espectro con ceros129..255",identity,observed_hash);
+end
+endtask
+task automatic begin_only(input integer identity);
+begin
+@(negedge wr_clk);frame_begin=1;frame_seq=identity;
+wave_valid=0;spectrum_valid=0;frame_done=0;
+wr_step();
+@(negedge wr_clk);frame_begin=0;
+end
+endtask
+task automatic expect_fault;
+begin
+wr_step();
+if(!wr_fault_latched||!wr_busy)
+$fatal(1,"DISPLAY: protocolo mal formado no produjo fallo");
+repeat(8)wr_step();
+if(!wr_fault_latched)
+$fatal(1,"DISPLAY: fallo no quedo retenido");
+end
+endtask
+integer index;
+initial begin
+$dumpfile("display_buffer.vcd");$dumpvars(1,tb_display_buffer);
+reset_both();
+@(negedge pix_clk);rd_en=1;rd_wave_addr=255;rd_spectrum_addr=255;
+repeat(4)begin pix_step();if(rd_valid)$fatal(1,"DISPLAY: lectura antes del primer frente");end
+@(negedge pix_clk);rd_en=0;
+drive_frame(1,1,1);
+if(!wr_busy||wr_fault_latched||front_valid)
+$fatal(1,"DISPLAY: commit no espero el primer limite de imagen");
+drive_frame(2,0,0);
+repeat(6)pix_step();
+if(!wr_busy||wr_fault_latched||front_valid)
+$fatal(1,"DISPLAY: cuadro ignorado altero pendiente o frente");
+swap_at_boundary(1);wait_writer_free();read_frame(1);
+fork
+drive_frame(3,0,0);
+read_frame(1);
+join
+if(wr_fault_latched||!wr_busy||front_seq!==32'd1)
+$fatal(1,"DISPLAY: escritura trasera cambio el frente o perdio commit");
+fork
+drive_frame(4,0,0);
+begin
+repeat(40)wr_step();
+swap_at_boundary(3);wait_writer_free();read_frame(3);
+end
+join
+if(wr_fault_latched||wr_busy||front_seq!==32'd3)
+$fatal(1,"DISPLAY: se acepto parte de un cuadro descartado durante ACK");
+fork
+drive_frame(5,0,0);
+read_frame(3);
+join
+repeat(6)pix_step();
+@(negedge pix_clk);
+rd_en=1;rd_wave_addr=0;rd_spectrum_addr=128;frame_start=1;
+pix_step();
+if(!front_valid||front_seq!==32'd5)
+$fatal(1,"DISPLAY: lectura/swap simultaneo no publico seq5");
+check_read_data(3,0,128);
+@(negedge pix_clk);rd_en=0;frame_start=0;
+wait_writer_free();read_frame(5);
+begin_only(6);
+wave_valid=1;wave_index=0;wave_sample=expected_wave(6,0);
+wr_step();
+@(negedge wr_clk);wave_index=2;wave_sample=expected_wave(6,2);
+wr_step();
+@(negedge wr_clk);wave_valid=0;
+expect_fault();
+swap_at_boundary(5);read_frame(5);
+begin_only(7);expect_fault();
+if(front_seq!==32'd5)$fatal(1,"DISPLAY: fallo altero metadatos visibles");
+reset_both();
+begin_only(7);
+wave_valid=1;wave_index=0;wave_sample=expected_wave(7,0);frame_done=1;
+wr_step();
+@(negedge wr_clk);wave_valid=0;frame_done=0;
+expect_fault();
+@(negedge pix_clk);frame_start=1;pix_step();
+if(front_valid)$fatal(1,"DISPLAY: fin prematuro publico cuadro");
+@(negedge pix_clk);frame_start=0;
+reset_both();
+begin_only(8);
+begin_only(9);
+expect_fault();
+reset_both();
+begin_only(10);
+for(index=0;index<256;index=index+1)begin
+wave_valid=1;wave_index=index;wave_sample=expected_wave(10,index);
+wr_step();@(negedge wr_clk);
+end
+wave_valid=0;spectrum_valid=1;spectrum_index=1;
+spectrum_mag=expected_spectrum(10,1);
+wr_step();@(negedge wr_clk);spectrum_valid=0;
+expect_fault();
+reset_both();begin_only(10);
+wave_valid=1;wave_index=0;wave_sample=expected_wave(10,0);
+wr_step();@(negedge wr_clk);wave_valid=0;
+reset_both();
+@(negedge pix_clk);frame_start=1;pix_step();
+if(front_valid)$fatal(1,"DISPLAY: reaparecio cuadro parcial previo al reset");
+@(negedge pix_clk);frame_start=0;
+drive_frame(11,0,0);swap_at_boundary(11);wait_writer_free();read_frame(11);
+drive_frame(12,0,0);
+if(!wr_busy)$fatal(1,"DISPLAY: falta publicacion pendiente para reset");
+reset_both();
+@(negedge pix_clk);frame_start=1;pix_step();
+if(front_valid)$fatal(1,"DISPLAY: reaparecio request previo al reset");
+@(negedge pix_clk);frame_start=0;
+drive_frame(13,1,1);swap_at_boundary(13);wait_writer_free();read_frame(13);
+if(observed_swaps!=5)
+$fatal(1,"DISPLAY: cantidad de intercambios incorrecta: %0d",observed_swaps);
+$display("PASS: DISPLAY_BUFFER, %0d lecturas exactas/%0d verificaciones completas,5swaps,CDC,descartes,protocolo y reset",checked_reads,checked_frames);
+$finish;
+end
+initial begin#2000000;$fatal(1,"DISPLAY: timeout global");end
+endmodule
+module tb_entrega;
+tb_display_buffer prueba();
+endmodule
+`elsif ELDI_TB_VIDEO
+`timescale 1ns/1ps
+module tb_video_timing_720p;
+reg clk=1'b0;
+always#5clk=~clk;
+reg rst_n=1'b0;
+wire[10:0]x;
+wire[9:0]y;
+wire de,hsync,vsync,frame_start;
+integer h,v,active_count,hs_count,vs_count,frame_count;
+integer line_active,line_hs;
+integer checks=0;
+video_timing_720p dut(
+.clk(clk),.rst_n(rst_n),.x(x),.y(y),.de(de),
+.hsync(hsync),.vsync(vsync),.frame_start(frame_start)
+);
+task automatic check_pixel(input integer expected_x,expected_y);
+reg expected_de,expected_hs,expected_vs,expected_start;
+begin
+expected_de=(expected_x<1280)&&(expected_y<720);
+expected_hs=(expected_x>=1390)&&(expected_x<1430);
+expected_vs=(expected_y>=725)&&(expected_y<730);
+expected_start=(expected_x==0)&&(expected_y==0);
+checks=checks+1;
+if(x!==expected_x||y!==expected_y||
+de!==expected_de||hsync!==expected_hs||
+vsync!==expected_vs||frame_start!==expected_start)
+$fatal(1,
+"TIMING t=%0t: xy=%0d,%0d esperado=%0d,%0d de/hs/vs/fs=%b%b%b%b esperado=%b%b%b%b",
+$time,x,y,expected_x,expected_y,de,hsync,vsync,
+frame_start,expected_de,expected_hs,expected_vs,expected_start);
+end
+endtask
+task automatic reset_dut;
+begin
+@(negedge clk);rst_n=1'b0;
+#1;
+if(x!==11'd0||y!==10'd0||de||hsync||vsync||frame_start)
+$fatal(1,"TIMING: reset no devuelve origen con controles bajos");
+repeat(2)@(posedge clk);
+#2rst_n=1'b1;
+#1;
+check_pixel(0,0);
+end
+endtask
+initial begin
+active_count=0;hs_count=0;vs_count=0;frame_count=0;
+reset_dut();
+for(v=0;v<750;v=v+1)begin
+line_active=0;
+line_hs=0;
+for(h=0;h<1650;h=h+1)begin
+check_pixel(h,v);
+if(de)begin active_count=active_count+1;line_active=line_active+1;end
+if(hsync)begin hs_count=hs_count+1;line_hs=line_hs+1;end
+if(vsync)vs_count=vs_count+1;
+if(frame_start)frame_count=frame_count+1;
+@(posedge clk);#1;
+end
+if(line_hs!=40||line_active!=((v<720)?1280:0))
+$fatal(1,"TIMING linea%0d: activos%0d HS%0d",v,line_active,line_hs);
+end
+check_pixel(0,0);
+if(active_count!=921600||hs_count!=30000||
+vs_count!=8250||frame_count!=1)
+$fatal(1,"TIMING: conteos activos=%0d HS=%0d VS=%0d frames=%0d",
+active_count,hs_count,vs_count,frame_count);
+repeat(137)@(posedge clk);
+#1;
+check_pixel(137,0);
+reset_dut();
+for(h=0;h<200;h=h+1)begin
+check_pixel(h,0);
+@(posedge clk);#1;
+end
+$display("PASS: TIMING720p, cuadro1650x750, activos921600, HS40, VS5lineas, wrap y reset, %0d comprobaciones",checks);
+$finish;
+end
+initial begin
+$dumpfile("video_timing_720p.vcd");
+$dumpvars(1,tb_video_timing_720p);
+repeat(5000)@(posedge clk);
+$dumpoff;
+end
+initial begin#15000000;$fatal(1,"TIMING: timeout de cuadro completo");end
+endmodule
+module tb_entrega;
+tb_video_timing_720p prueba();
+endmodule
+`elsif ELDI_TB_TRAZADOR
+`timescale 1ns/1ps
+module tb_plot_renderer;
+localparam[23:0]BLACK=24'h000000,GRID=24'h202020,AXIS=24'h606060;
+localparam[23:0]BORDER=24'h808080,WAVE=24'h00ff40,FFT=24'h00d8ff;
+reg clk=1'b0;
+always#5clk=~clk;
+reg rst_n=1'b0;
+reg[10:0]x=0;
+reg[9:0]y=0;
+reg de=0,hsync=0,vsync=0,mode_fft=0,front_valid=0;
+wire rd_en;
+wire[7:0]rd_wave_addr,rd_spectrum_addr;
+reg rd_valid=0;
+reg signed[15:0]wave_prev=0,wave_sample=0;
+reg[17:0]spectrum_mag=0;
+wire[7:0]rgb_r,rgb_g,rgb_b;
+wire de_out,hsync_out,vsync_out;
+integer pattern_set=0;
+integer probes=0,checks=0;
+reg[23:0]expected_current_rgb=BLACK;
+reg[23:0]expected_previous_rgb=BLACK;
+reg expected_previous_de=0,expected_previous_hs=0,expected_previous_vs=0;
+plot_renderer dut(
+.clk(clk),.rst_n(rst_n),.x(x),.y(y),.de(de),
+.hsync(hsync),.vsync(vsync),.mode_fft(mode_fft),.front_valid(front_valid),
+.rd_en(rd_en),.rd_wave_addr(rd_wave_addr),.rd_spectrum_addr(rd_spectrum_addr),
+.rd_valid(rd_valid),.wave_prev(wave_prev),.wave_sample(wave_sample),
+.spectrum_mag(spectrum_mag),.rgb_r(rgb_r),.rgb_g(rgb_g),.rgb_b(rgb_b),
+.de_out(de_out),.hsync_out(hsync_out),.vsync_out(vsync_out)
+);
+function automatic signed[15:0]mock_wave(input integer address,dataset);
+begin
+case(dataset)
+1:mock_wave=16'sh7fff;
+2:mock_wave=16'sh8000;
+3:mock_wave=(address==0)?16'sh8000:16'sh7fff;
+4:mock_wave=(address==0)?16'sh7fff:16'sh8000;
+5:mock_wave=-16'sd1;
+10:mock_wave=address*128;
+default:mock_wave=16'sd0;
+endcase
+end
+endfunction
+function automatic[17:0]mock_magnitude(input integer address,dataset);
+begin
+case(dataset)
+6:mock_magnitude=18'd64;
+7:mock_magnitude=18'd32704;
+8:mock_magnitude=18'd185363;
+9:mock_magnitude=18'd262143;
+11:mock_magnitude=18'd63;
+12:mock_magnitude=address*64;
+default:mock_magnitude=18'd0;
+endcase
+end
+endfunction
+always@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+rd_valid<=1'b0;
+wave_prev<=16'sd0;
+wave_sample<=16'sd0;
+spectrum_mag<=18'd0;
+end else begin
+rd_valid<=rd_en;
+if(rd_en)begin
+wave_sample<=mock_wave(rd_wave_addr,pattern_set);
+wave_prev<=mock_wave((rd_wave_addr==0)?0:(rd_wave_addr-1),pattern_set);
+spectrum_mag<=mock_magnitude(rd_spectrum_addr,pattern_set);
+end
+end
+end
+always@(posedge clk)begin:output_scoreboard
+reg[23:0]saved_rgb;
+reg saved_de,saved_hs,saved_vs;
+saved_rgb=expected_current_rgb;
+saved_de=de;saved_hs=hsync;saved_vs=vsync;
+#1;
+checks=checks+1;
+if(!rst_n)begin
+if({rgb_r,rgb_g,rgb_b}!==BLACK||de_out||hsync_out||vsync_out)
+$fatal(1,"RENDER: salidas no estan en reposo durante reset");
+expected_previous_rgb=BLACK;
+expected_previous_de=0;expected_previous_hs=0;expected_previous_vs=0;
+end else begin
+if({rgb_r,rgb_g,rgb_b}!==expected_previous_rgb||
+de_out!==expected_previous_de||hsync_out!==expected_previous_hs||
+vsync_out!==expected_previous_vs)
+$fatal(1,
+"RENDER t=%0t: RGB=%h esperado=%h DE/HS/VS=%b%b%b esperado=%b%b%b",
+$time,{rgb_r,rgb_g,rgb_b},expected_previous_rgb,de_out,hsync_out,vsync_out,
+expected_previous_de,expected_previous_hs,expected_previous_vs);
+expected_previous_rgb=saved_rgb;
+expected_previous_de=saved_de;
+expected_previous_hs=saved_hs;
+expected_previous_vs=saved_vs;
+end
+end
+task automatic reset_dut;
+begin
+@(negedge clk);rst_n=0;
+de=0;hsync=0;vsync=0;front_valid=0;
+expected_current_rgb=BLACK;
+#1;
+if({rgb_r,rgb_g,rgb_b}!==BLACK||de_out||hsync_out||vsync_out||rd_en)
+$fatal(1,"RENDER: reset asincrono no cancela pixel pendiente");
+repeat(2)@(posedge clk);
+#2rst_n=1;
+end
+endtask
+task automatic probe(
+input integer px,py,
+input reg active,fft_mode,has_front,
+input integer dataset,
+input[23:0]expected_color,
+input integer expected_wave_addr,expected_spec_addr
+);
+begin
+@(negedge clk);
+x=px;y=py;de=active;mode_fft=fft_mode;front_valid=has_front;
+pattern_set=dataset;
+hsync=probes[0];vsync=probes[1];probes=probes+1;
+expected_current_rgb=expected_color;
+#1;
+if(rd_en!==(active&&has_front)||rd_wave_addr!==expected_wave_addr||
+rd_spectrum_addr!==expected_spec_addr)
+$fatal(1,"RENDER: solicitud en xy=%0d,%0d en=%b w=%0d s=%0d; esperado=%b,%0d,%0d",
+px,py,rd_en,rd_wave_addr,rd_spectrum_addr,
+active&&has_front,expected_wave_addr,expected_spec_addr);
+@(posedge clk);#2;
+end
+endtask
+initial begin
+$dumpfile("plot_renderer.vcd");
+$dumpvars(1,tb_plot_renderer);
+reset_dut();
+probe(50,50,1,0,0,0,BLACK,0,0);
+probe(256,200,1,0,0,0,GRID,32,16);
+probe(300,256,1,0,0,0,GRID,43,21);
+probe(300,384,1,0,0,0,AXIS,43,21);
+probe(300,384,1,1,0,0,GRID,43,21);
+probe(128,200,1,0,0,0,AXIS,0,0);
+probe(127,200,1,0,0,0,BORDER,0,0);
+probe(1152,200,1,0,0,0,BORDER,255,128);
+probe(1160,200,1,1,0,0,BORDER,255,128);
+probe(300,127,1,0,0,0,BORDER,43,21);
+probe(300,640,1,0,0,0,BORDER,43,21);
+probe(300,384,1,0,1,0,WAVE,43,21);
+probe(301,384,1,0,1,0,WAVE,43,21);
+probe(301,383,1,0,1,0,BLACK,43,21);
+probe(301,385,1,0,1,0,BLACK,43,21);
+probe(301,129,1,0,1,1,WAVE,43,21);
+probe(301,128,1,0,1,1,GRID,43,21);
+probe(301,130,1,0,1,1,BLACK,43,21);
+probe(301,639,1,0,1,2,WAVE,43,21);
+probe(301,638,1,0,1,2,BLACK,43,21);
+probe(301,385,1,0,1,5,WAVE,43,21);
+probe(301,384,1,0,1,5,AXIS,43,21);
+probe(132,200,1,0,1,3,WAVE,1,0);
+probe(133,200,1,0,1,3,BLACK,1,0);
+probe(133,129,1,0,1,3,WAVE,1,0);
+probe(128,200,1,0,1,3,AXIS,0,0);
+probe(128,639,1,0,1,3,WAVE,0,0);
+probe(132,200,1,0,1,4,WAVE,1,0);
+probe(135,200,1,0,1,4,BLACK,1,0);
+probe(135,639,1,0,1,4,WAVE,1,0);
+probe(1151,129,1,0,1,10,WAVE,255,127);
+probe(1152,129,1,0,1,10,BORDER,255,128);
+probe(301,639,1,1,1,0,AXIS,43,21);
+probe(301,639,1,1,1,11,AXIS,43,21);
+probe(301,639,1,1,1,6,FFT,43,21);
+probe(301,638,1,1,1,6,BLACK,43,21);
+probe(301,129,1,1,1,7,FFT,43,21);
+probe(301,128,1,1,1,7,GRID,43,21);
+probe(301,639,1,1,1,7,FFT,43,21);
+probe(301,129,1,1,1,8,FFT,43,21);
+probe(301,200,1,1,1,9,FFT,43,21);
+probe(1151,513,1,1,1,12,FFT,255,127);
+probe(1152,512,1,1,1,12,FFT,255,128);
+probe(1153,511,1,1,1,12,BLACK,255,128);
+probe(1159,200,1,1,1,8,FFT,255,128);
+probe(1160,200,1,1,1,8,BORDER,255,128);
+probe(301,384,1,0,1,0,WAVE,43,21);
+probe(301,384,1,0,0,0,AXIS,43,21);
+probe(301,200,1,1,0,8,BLACK,43,21);
+probe(301,200,1,1,1,8,FFT,43,21);
+probe(301,384,0,0,1,0,BLACK,43,21);
+probe(1400,730,0,1,1,9,BLACK,255,128);
+probe(301,129,1,1,1,8,FFT,43,21);
+reset_dut();
+probe(301,384,1,0,1,0,WAVE,43,21);
+probe(301,384,1,0,0,0,AXIS,43,21);
+probe(0,0,0,0,0,0,BLACK,0,0);
+probe(0,0,0,0,0,0,BLACK,0,0);
+$display("PASS: RENDERER RGB, %0d pixeles dirigidos/%0d ciclos comprobados; RAMsincrona, dosflancos, recorte y sincronismos",probes,checks);
+$finish;
+end
+initial begin#100000;$fatal(1,"RENDER: timeout de pruebas dirigidas");end
+endmodule
+module tb_entrega;
+tb_plot_renderer prueba();
+endmodule
+`elsif ELDI_TB_TMDS
+`timescale 1ns/1ps
+module tb_tmds_encoder;
+localparam real PIXEL_NS=1000.0/74.25;
+reg clk=0;
+always#(PIXEL_NS/2.0)clk=!clk;
+reg rst_n=0,de=0,c0=0,c1=0;
+reg[7:0]data=0;
+wire[9:0]symbol;
+integer running_balance=0;
+integer data_checks=0,control_checks=0,reset_checks=0,unique_codes=0;
+integer states[0:31],parent[0:31],parent_byte[0:31],number_states=1;
+reg covered[0:31][0:255];
+reg active_codes[0:1023];
+real last_pixel_edge=0.0;
+reg monitor_changes=0;
+reg[31:0]random_state=32'h71d52026;
+tmds_encoder dut(.clk(clk),.rst_n(rst_n),.de(de),.data(data),
+.c0(c0),.c1(c1),.symbol(symbol));
+function automatic integer abs_integer(input integer x);
+abs_integer=(x<0)?-x:x;
+endfunction
+function automatic integer symbol_balance(input reg[9:0]code);
+integer i,total;
+begin
+total=0;
+for(i=0;i<10;i=i+1)if(code[i])total=total+1;
+symbol_balance=2*total-10;
+end
+endfunction
+function automatic integer transitions(input reg[7:0]value);
+integer i,total;
+begin
+total=0;
+for(i=1;i<8;i=i+1)if(value[i]!=value[i-1])total=total+1;
+transitions=total;
+end
+endfunction
+function automatic reg[9:0]control_code(input reg[1:0]control);
+begin
+case(control)
+0:control_code=10'b1101010100;
+1:control_code=10'b0010101011;
+2:control_code=10'b0101010100;
+3:control_code=10'b1010101011;
+endcase
+end
+endfunction
+function automatic reg[7:0]decode_pixel(input reg[9:0]code);
+reg[7:0]recovered_payload,delta;
+begin
+recovered_payload=code[7:0]^{8{code[9]}};
+delta=recovered_payload^(recovered_payload<<1);
+if(!code[8])delta=delta^8'hfe;
+decode_pixel=delta;
+end
+endfunction
+function automatic reg[9:0]reference_symbol(input reg[7:0]pixel,input integer rd);
+reg[7:0]prefix_xor,prefix_xnor,payload;
+reg q8;
+reg[9:0]plain,inverted;
+integer i,j,parity,plain_rd,inverted_rd,ones;
+begin
+prefix_xor=0;
+for(i=0;i<8;i=i+1)begin
+parity=0;
+for(j=0;j<=i;j=j+1)parity=parity^pixel[j];
+prefix_xor[i]=parity;
+end
+prefix_xnor=prefix_xor^8'haa;
+q8=(transitions(prefix_xor)<transitions(prefix_xnor));
+payload=q8?prefix_xor:prefix_xnor;
+plain={1'b0,q8,payload};
+inverted={1'b1,q8,~payload};
+ones=0;
+for(i=0;i<8;i=i+1)if(payload[i])ones=ones+1;
+if(rd==0||ones==4)reference_symbol=q8?plain:inverted;
+else begin
+plain_rd=rd+symbol_balance(plain);
+inverted_rd=rd+symbol_balance(inverted);
+if(abs_integer(plain_rd)==abs_integer(inverted_rd))
+$fatal(1,"REF TMDS: empate inesperado fuera de casos canonicos");
+reference_symbol=(abs_integer(plain_rd)<abs_integer(inverted_rd))?plain:inverted;
+end
+end
+endfunction
+always@(posedge clk)last_pixel_edge=$realtime;
+always@(symbol)
+if(rst_n&&monitor_changes&&$realtime!=last_pixel_edge)
+$fatal(1,"TMDS: salida cambio fuera de flanco de pixel");
+task automatic reset_encoder;
+begin
+@(negedge clk);rst_n=0;de=0;c0=0;c1=0;data=0;
+#1;
+if(symbol!==10'b1101010100)$fatal(1,"TMDS: reset no produce control00");
+running_balance=0;
+repeat(2)@(negedge clk);
+rst_n=1;
+#1;
+if(symbol!==10'b1101010100)$fatal(1,"TMDS: liberar reset cambio salida");
+reset_checks=reset_checks+1;
+end
+endtask
+task automatic drive_control(input reg[1:0]control);
+reg[9:0]held;
+begin
+@(negedge clk);held=symbol;
+de=0;c1=control[1];c0=control[0];data=~data;
+#1;
+if(symbol!==held)$fatal(1,"TMDS: control atraviesa registro antes del flanco");
+@(posedge clk);#1;
+if(symbol!==control_code(control))
+$fatal(1,"TMDS: control%0d incorrecto, got=%b",control,symbol);
+running_balance=0;
+control_checks=control_checks+1;
+end
+endtask
+task automatic drive_pixel(input reg[7:0]pixel);
+reg[9:0]expected,held;
+reg[7:0]payload;
+integer i;
+begin
+expected=reference_symbol(pixel,running_balance);
+@(negedge clk);held=symbol;
+de=1;data=pixel;
+c0=~c0;c1=c0^c1;
+#1;
+if(symbol!==held)$fatal(1,"TMDS: dato atraviesa registro antes del flanco");
+@(posedge clk);#1;
+if(symbol!==expected)
+$fatal(1,"TMDS: pixel=%h RD=%0d got=%b expected=%b",pixel,running_balance,symbol,expected);
+if(decode_pixel(symbol)!==pixel)
+$fatal(1,"TMDS: el simbolo no recupera pixel=%h",pixel);
+for(i=0;i<4;i=i+1)
+if(symbol===control_code(i))$fatal(1,"TMDS: datos emitieron simbolo reservado de control");
+payload=symbol[7:0]^{8{symbol[9]}};
+if(transitions(payload)>3)$fatal(1,"TMDS: primera etapa no minimizo transiciones");
+running_balance=running_balance+symbol_balance(symbol);
+if(running_balance<-8||running_balance>8||running_balance%2!=0)
+$fatal(1,"TMDS: desequilibrio emitido fuera del conjunto alcanzable %0d",running_balance);
+if(!active_codes[symbol])begin active_codes[symbol]=1;unique_codes=unique_codes+1;end
+data_checks=data_checks+1;
+end
+endtask
+task automatic discover_states;
+integer cursor,p,next_rd,found,i;
+reg[9:0]code;
+begin
+states[0]=0;parent[0]=-1;parent_byte[0]=0;number_states=1;
+cursor=0;
+while(cursor<number_states)begin
+for(p=0;p<256;p=p+1)begin
+code=reference_symbol(p,states[cursor]);
+next_rd=states[cursor]+symbol_balance(code);
+found=-1;
+for(i=0;i<number_states;i=i+1)if(states[i]==next_rd)found=i;
+if(found<0)begin
+if(number_states>=32)$fatal(1,"TMDS: grafo de disparidad no cerro");
+states[number_states]=next_rd;
+parent[number_states]=cursor;parent_byte[number_states]=p;
+number_states=number_states+1;
+end
+end
+cursor=cursor+1;
+end
+if(number_states!=9)$fatal(1,"TMDS: numero de estados alcanzables=%0d",number_states);
+for(i=0;i<number_states;i=i+1)
+if(states[i]<-8||states[i]>8||states[i]%2!=0)
+$fatal(1,"TMDS: estado alcanzable inesperado=%0d",states[i]);
+end
+endtask
+task automatic reach_state(input integer state_index);
+integer path[0:31];
+integer count,cursor,j;
+begin
+drive_control(0);
+count=0;cursor=state_index;
+while(cursor!=0)begin
+if(count>=32)$fatal(1,"TMDS: camino BFS ciclico");
+path[count]=parent_byte[cursor];count=count+1;cursor=parent[cursor];
+end
+for(j=count-1;j>=0;j=j-1)drive_pixel(path[j]);
+if(running_balance!=states[state_index])$fatal(1,"TMDS: no alcanzo RD objetivo");
+end
+endtask
+integer s,p,n,c,transitions_checked;
+reg[9:0]held_symbol;
+initial begin
+$dumpfile("tmds_encoder.vcd");$dumpvars(0,tb_tmds_encoder);
+for(s=0;s<32;s=s+1)for(p=0;p<256;p=p+1)covered[s][p]=0;
+for(p=0;p<1024;p=p+1)active_codes[p]=0;
+reset_encoder();monitor_changes=1;discover_states();
+transitions_checked=0;
+for(s=0;s<number_states;s=s+1)begin
+for(p=0;p<256;p=p+1)begin
+reach_state(s);drive_pixel(p);
+covered[s][p]=1;transitions_checked=transitions_checked+1;
+repeat(8)drive_pixel(0);
+end
+end
+for(s=0;s<number_states;s=s+1)for(p=0;p<256;p=p+1)
+if(!covered[s][p])$fatal(1,"TMDS: transicion sin probar");
+if(transitions_checked!=2304||unique_codes!=460)
+$fatal(1,"TMDS: cobertura grafo/codigos incompleta: %0d/%0d",transitions_checked,unique_codes);
+$display("PASS: TMDS 9 estados RD x256 datos=2304 transiciones, 460 simbolos activos");
+for(s=0;s<number_states;s=s+1)begin
+for(c=0;c<4;c=c+1)begin
+reach_state(s);drive_control(c);drive_pixel(1);
+end
+reach_state(s);reset_encoder();drive_pixel(1);
+end
+drive_control(0);held_symbol=symbol;
+#1;de=1;data=8'hff;c0=1;c1=1;
+#1;
+if(symbol!==held_symbol)$fatal(1,"TMDS: glitch de entrada paso a salida");
+de=0;data=0;c0=0;c1=0;
+drive_control(0);
+for(n=0;n<1024;n=n+1)drive_pixel((n%2==0)?0:255);
+for(n=0;n<4096;n=n+1)begin
+random_state=random_state*32'd1664525+32'd1013904223;
+if(n%17==0)drive_control(random_state[1:0]);
+else drive_pixel(random_state[31:24]);
+end
+drive_control(3);drive_control(2);drive_control(1);drive_control(0);
+reset_encoder();drive_pixel(0);drive_pixel(255);
+$display("PASS: TMDS controles/DE/reset, decoder, balance emitido y salida registrada; datos=%0d controles=%0d resets=%0d",
+data_checks,control_checks,reset_checks);
+$finish;
+end
+initial begin#1000000;$fatal(1,"TMDS: timeout global");end
+endmodule
+module tb_entrega;
+tb_tmds_encoder prueba();
+endmodule
+`elsif ELDI_TB_INTEGRACION
+`timescale 1ns/1ps
+module adc_model_integracion_fd73(
+input wire enabled,adc_convst,adc_cs_n,adc_rd_n,adc_reset,
+output reg adc_busy=1'b0,
+output wire adc_fd,
+output wire[7:0]adc_db
+);
+reg ready=1'b0;
+reg[15:0]result_word=0;
+reg[7:0]bus_byte=0;
+reg fd_valid=1'b0;
+integer ordinal=0;
+integer bytes_read=0;
+wire selected=enabled&&!adc_reset&&ready&&!adc_cs_n&&!adc_rd_n;
+assign adc_fd=selected?fd_valid:1'bz;
+assign adc_db=selected&&fd_valid?bus_byte:8'hzz;
+function automatic signed[15:0]tone(input integer index);
+tone=$rtoi(8192.0*$cos(6.283185307179586*(index%64)/64.0));
+endfunction
+always@(posedge adc_reset)begin
+adc_busy=1'b0;
+ready=1'b0;
+fd_valid=1'b0;
+ordinal=0;
+bytes_read=0;
+end
+always@(posedge adc_convst)begin
+if(enabled&&!adc_reset)begin
+if(adc_busy||ready||!adc_cs_n)
+$fatal(1,"INT FINAL: CONVST antes de terminar la lectura anterior");
+#17;
+adc_busy=1'b1;
+#4183;
+result_word=tone(ordinal);
+ordinal=ordinal+1;
+ready=1'b1;
+adc_busy=1'b0;
+end
+end
+always@(negedge adc_cs_n)begin
+if(enabled&&(adc_busy||!ready||!adc_rd_n))
+$fatal(1,"INT FINAL: CS antes de conversión lista");
+bytes_read=0;
+end
+always@(negedge adc_rd_n)begin
+if(enabled)begin
+if(adc_cs_n||adc_reset||!ready||adc_busy||bytes_read>=2)
+$fatal(1,"INT FINAL: RD fuera de la lectura de AIN1 después de BUSY");
+fd_valid=1'b0;
+bus_byte=(bytes_read==0)?result_word[15:8]:result_word[7:0];
+bytes_read=bytes_read+1;
+#37;
+fd_valid=1'b1;
+end
+end
+always@(posedge adc_cs_n)begin
+if(enabled&&ready)begin
+if(bytes_read!=2)$fatal(1,"INT FINAL: AIN1 exige dos bytes");
+ready=1'b0;
+end
+end
+endmodule
+module tb_integracion_final#(
+parameter bit STANDALONE=1'b1
+)(
+output reg done=1'b0
+);
+localparam realtime ADC_HALF_NS=500.0/27.0;
+localparam realtime PIX_HALF_NS=500.0/74.25;
+reg clk27=1'b0;
+reg pix_base_clk=1'b0;
+reg pixel_clock_running=1'b1;
+wire pix_clk=pix_base_clk&&pixel_clock_running;
+reg rst27_n=1'b0;
+reg rstpix_n=1'b0;
+reg key_s2=1'b0;
+always#(ADC_HALF_NS)clk27=~clk27;
+initial begin
+#2.731;
+forever#(PIX_HALF_NS)pix_base_clk=~pix_base_clk;
+end
+wire adc_busy,adc_fd,adc_convst,adc_cs_n,adc_rd_n,adc_reset;
+wire[7:0]adc_db;
+wire mode_fft,adc_fault,processor_fault,display_fault,front_valid;
+wire[31:0]front_seq;
+wire[23:0]rgb;
+wire video_de,video_hsync,video_vsync;
+wire[9:0]tmds_red,tmds_green,tmds_blue;
+wire sample_valid,frame_begin,wave_valid,spectrum_valid,frame_done;
+wire[31:0]frame_seq;
+wire[7:0]wave_index,spectrum_index;
+wire signed[15:0]sample_signed,wave_sample;
+wire[17:0]spectrum_mag;
+analyzer_core#(.ADC_STARTUP_CYCLES(8),.DEBOUNCE_CYCLES(4))dut(
+.clk27(clk27),.pix_clk(pix_clk),.rst27_n(rst27_n),.rstpix_n(rstpix_n),
+.key_s2(key_s2),.adc_busy(adc_busy),.adc_fd(adc_fd),.adc_db(adc_db),
+.adc_convst(adc_convst),.adc_cs_n(adc_cs_n),.adc_rd_n(adc_rd_n),.adc_reset(adc_reset),
+.tmds_red(tmds_red),.tmds_green(tmds_green),.tmds_blue(tmds_blue),
+.mode_fft(mode_fft),.adc_fault(adc_fault),.processor_fault(processor_fault),
+.display_fault(display_fault),.front_valid(front_valid),.front_seq(front_seq),
+.rgb_r(rgb[23:16]),.rgb_g(rgb[15:8]),.rgb_b(rgb[7:0]),
+.video_de(video_de),.video_hsync(video_hsync),.video_vsync(video_vsync),
+.debug_sample_valid(sample_valid),.debug_sample_signed(sample_signed),
+.debug_frame_begin(frame_begin),.debug_frame_seq(frame_seq),
+.debug_wave_valid(wave_valid),.debug_wave_index(wave_index),.debug_wave_sample(wave_sample),
+.debug_spectrum_valid(spectrum_valid),.debug_spectrum_index(spectrum_index),
+.debug_spectrum_mag(spectrum_mag),.debug_frame_done(frame_done)
+);
+adc_model_integracion_fd73 adc_model(
+.enabled(rst27_n),.adc_convst(adc_convst),.adc_cs_n(adc_cs_n),.adc_rd_n(adc_rd_n),
+.adc_reset(adc_reset),.adc_busy(adc_busy),.adc_fd(adc_fd),.adc_db(adc_db)
+);
+integer adc_cycle=0;
+integer conversions=0;
+integer last_conversion=-1;
+integer samples=0;
+integer waves=0;
+integer spectrum_count=0;
+reg block_started=1'b0;
+reg block_done=1'b0;
+reg previous_sample_valid=1'b0;
+always@(posedge adc_convst)begin
+if(rst27_n)begin
+if(last_conversion>=0&&adc_cycle-last_conversion!=135)
+$fatal(1,"INT FINAL: CONVST cambió la cadencia de 135 ciclos");
+conversions=conversions+1;
+last_conversion=adc_cycle;
+end
+end
+always@(posedge clk27)begin
+adc_cycle=adc_cycle+1;
+if(rst27_n)begin
+if(sample_valid)begin
+if(previous_sample_valid||sample_signed!==adc_model.tone(samples))
+$fatal(1,"INT FINAL: muestra %0d inválida o fuera de orden",samples);
+samples=samples+1;
+if(samples!=conversions)$fatal(1,"INT FINAL: pérdida o duplicación de muestra");
+end
+previous_sample_valid=sample_valid;
+end
+#1;
+if(rst27_n)begin
+if(adc_fault||processor_fault||display_fault)
+$fatal(1,"INT FINAL: diagnóstico inesperado");
+if(!block_done)begin
+if(frame_begin)begin
+if(block_started||frame_seq!==32'd0||samples<256)
+$fatal(1,"INT FINAL: frente sin un primer bloque completo");
+block_started=1'b1;
+end
+if(wave_valid)begin
+if(!block_started||waves>=256||
+wave_index!==waves[7:0]||wave_sample!==adc_model.tone(waves))
+$fatal(1,"INT FINAL: dato de traza incorrecto en %0d",waves);
+waves=waves+1;
+end
+if(spectrum_valid)begin
+if(!block_started||waves!=256||spectrum_count>=129||
+spectrum_index!==spectrum_count[7:0])
+$fatal(1,"INT FINAL: magnitudes desordenadas o sin traza correspondiente");
+if((spectrum_index==8'd4&&!(spectrum_mag>=18'd4080&&spectrum_mag<=18'd4112))||
+(spectrum_index!=8'd4&&!(spectrum_mag<=18'd16)))
+$fatal(1,"INT FINAL: magnitud inesperada en bin %0d: %0d",spectrum_index,spectrum_mag);
+spectrum_count=spectrum_count+1;
+end
+if(frame_done)begin
+if(!spectrum_valid||waves!=256||spectrum_count!=129)
+$fatal(1,"INT FINAL: frame_done sin 256 muestras y 129 magnitudes");
+block_done=1'b1;
+end
+end
+end
+end
+function automatic[7:0]decode_pixel(input[9:0]code);
+reg[7:0]payload,delta;
+begin
+payload=code[7:0]^{8{code[9]}};
+delta=payload^(payload<<1);
+if(!code[8])delta=delta^8'hfe;
+decode_pixel=delta;
+end
+endfunction
+function automatic[9:0]control_code(input[1:0]control);
+case(control)
+0:control_code=10'b1101010100;
+1:control_code=10'b0010101011;
+2:control_code=10'b0101010100;
+3:control_code=10'b1010101011;
+endcase
+endfunction
+task automatic advance_pixels(input integer count);
+begin
+repeat(count)begin@(posedge pix_clk);#1;end
+end
+endtask
+reg[10:0]jump_x;
+reg[9:0]jump_y;
+task automatic jump_to_pixel(input[10:0]target_x,input[9:0]target_y);
+begin
+@(negedge pix_clk);
+jump_x=target_x;
+jump_y=target_y;
+force dut.timing.x=jump_x;
+force dut.timing.y=jump_y;
+#1;
+release dut.timing.x;
+release dut.timing.y;
+end
+endtask
+task automatic verify_video(
+input[10:0]target_x,
+input[9:0]target_y,
+input[23:0]color,
+input de,hs,vs
+);
+begin
+jump_to_pixel(target_x,target_y);
+advance_pixels(4);
+if(rgb!==color||{video_de,video_hsync,video_vsync}!=={de,hs,vs})
+$fatal(1,"INT FINAL: pixel %0d,%0d produjo %h en vez de %h",target_x,target_y,rgb,color);
+advance_pixels(1);
+if(de)begin
+if({decode_pixel(tmds_red),decode_pixel(tmds_green),decode_pixel(tmds_blue)}!==color)
+$fatal(1,"INT FINAL: TMDS no recupera RGB");
+end else if(tmds_red!==control_code(0)||tmds_green!==control_code(0)||
+tmds_blue!==control_code({vs,hs}))begin
+$fatal(1,"INT FINAL: símbolo de control TMDS desalineado");
+end
+end
+endtask
+initial begin
+repeat(5)@(negedge clk27);
+rst27_n=1'b1;
+@(negedge pix_base_clk);
+rstpix_n=1'b1;
+pixel_clock_running=1'b0;
+wait(block_done);
+repeat(3)@(negedge clk27);
+@(negedge pix_base_clk);
+pixel_clock_running=1'b1;
+advance_pixels(6);
+jump_to_pixel(11'd1649,10'd749);
+advance_pixels(4);
+if(!front_valid||front_seq!==32'd0||mode_fft)
+$fatal(1,"INT FINAL: primer frente no publicado en la vista temporal");
+verify_video(11'd129,10'd320,24'h00ff40,1,0,0);
+@(negedge pix_clk);
+key_s2=1'b1;
+advance_pixels(16);
+if(mode_fft)$fatal(1,"INT FINAL: S2 cambió antes del límite de cuadro");
+jump_to_pixel(11'd1649,10'd749);
+advance_pixels(4);
+if(!mode_fft||!front_valid||front_seq!==32'd0)
+$fatal(1,"INT FINAL: S2 no conmutó el mismo frente de ADC");
+verify_video(11'd164,10'd610,24'h00d8ff,1,0,0);
+verify_video(11'd1300,10'd10,24'd0,0,0,0);
+verify_video(11'd1400,10'd10,24'd0,0,1,0);
+verify_video(11'd1300,10'd725,24'd0,0,0,1);
+verify_video(11'd1400,10'd725,24'd0,0,1,1);
+@(negedge clk27);
+rst27_n=1'b0;
+rstpix_n=1'b0;
+#1;
+if(front_valid||mode_fft||rgb!==24'd0||video_de||video_hsync||video_vsync||
+tmds_red!==control_code(0)||tmds_green!==control_code(0)||tmds_blue!==control_code(0))
+$fatal(1,"INT FINAL: reset no limpia el estado de vídeo y TMDS");
+$display("PASS: INTEGRACION FINAL FD73, %0d muestras, 256 de traza, bin 4/129 bins, S2, RGB y TMDS",samples);
+done=1'b1;
+if(STANDALONE)$finish;
+end
+initial begin
+#3000000;
+if(!done)$fatal(1,"INT FINAL: timeout de 3 ms");
+end
+endmodule
+module tb_entrega;
+tb_integracion_final prueba();
+endmodule
+`else
+`timescale 1ns/1ps
+module tb_adc_final#(
+parameter bit STANDALONE=1'b1
+)(
+output reg done=1'b0
+);
+localparam integer STARTUP_CYCLES=5;
+localparam integer SAMPLE_PERIOD_CYCLES=135;
+localparam realtime HALF_CLOCK_NS=18.5185;
+localparam realtime DATA_ACCESS_NS=37.0;
+reg clk=1'b0;
+reg rst_n=1'b0;
+reg adc_busy=1'b0;
+reg adc_fd=1'bz;
+reg[7:0]adc_db=8'hzz;
+wire adc_convst,adc_cs_n,adc_rd_n,adc_reset;
+wire signed[15:0]sample_signed;
+wire sample_valid,fault_latched;
+wire[3:0]fault_code;
+ad7606_byte_reader#(.STARTUP_CYCLES(STARTUP_CYCLES))dut(
+.clk(clk),.rst_n(rst_n),.adc_busy(adc_busy),.adc_fd(adc_fd),.adc_db(adc_db),
+.adc_convst(adc_convst),.adc_cs_n(adc_cs_n),.adc_rd_n(adc_rd_n),
+.adc_reset(adc_reset),.sample_signed(sample_signed),.sample_valid(sample_valid),
+.fault_latched(fault_latched),.fault_code(fault_code)
+);
+always#(HALF_CLOCK_NS)clk=~clk;
+integer clocks=0;
+integer conversions=0;
+integer reads=0;
+integer published=0;
+integer last_reset_fall;
+reg result_ready=1'b0;
+always@(posedge clk)clocks=clocks+1;
+always@(posedge adc_convst)if(rst_n)conversions=conversions+1;
+always@(negedge adc_cs_n)begin
+if(rst_n&&!result_ready)$fatal(1,"ADC FINAL: CS antes de terminar BUSY");
+end
+always@(negedge adc_rd_n)begin
+if(rst_n)begin
+if(adc_cs_n||adc_busy||!result_ready)
+$fatal(1,"ADC FINAL: RD fuera de una lectura válida de AIN1");
+reads=reads+1;
+end
+end
+always@(posedge sample_valid)begin
+if(rst_n)begin
+if(!result_ready)$fatal(1,"ADC FINAL: publicación sin resultado de conversión");
+published=published+1;
+end
+end
+task automatic reset_reader;
+integer reset_released;
+integer reset_started;
+begin
+@(negedge clk);
+rst_n=1'b0;
+adc_busy=1'b0;
+adc_fd=1'bz;
+adc_db=8'hzz;
+result_ready=1'b0;
+#1;
+if({adc_convst,adc_cs_n,adc_rd_n,adc_reset,sample_valid,
+fault_latched,fault_code}!==10'b0110000000)
+$fatal(1,"ADC FINAL: reset no limpia salidas y error retenido");
+repeat(2)@(negedge clk);
+rst_n=1'b1;
+reset_released=clocks;
+@(posedge adc_reset);
+#1;
+reset_started=clocks;
+if(reset_started-reset_released!=STARTUP_CYCLES)
+$fatal(1,"ADC FINAL: espera de arranque incorrecta");
+@(negedge adc_reset);
+#1;
+last_reset_fall=clocks;
+if(last_reset_fall-reset_started!=4)
+$fatal(1,"ADC FINAL: RESET debe durar cuatro ciclos");
+end
+endtask
+task automatic start_conversion(input integer expected_clock,output integer started_at);
+begin
+@(posedge adc_convst);
+#1;
+started_at=clocks;
+if(started_at!=expected_clock||!adc_cs_n||!adc_rd_n||adc_reset||sample_valid)
+$fatal(1,"ADC FINAL: CONVST fuera de tiempo o bus activo (ciclo %0d, esperado %0d)",
+started_at,expected_clock);
+end
+endtask
+task automatic finish_conversion(input realtime conversion_ns);
+integer start_clock;
+begin
+start_clock=clocks;
+#16;
+adc_busy=1'b1;
+@(negedge adc_convst);
+#1;
+if(clocks-start_clock!=2)
+$fatal(1,"ADC FINAL: CONVST debe durar dos ciclos");
+#(conversion_ns-(4.0*HALF_CLOCK_NS+1.0));
+adc_busy=1'b0;
+result_ready=1'b1;
+end
+endtask
+task automatic send_byte(
+input[7:0]value,
+input fd_value,
+input integer low_cycles,
+output integer rd_start,
+output integer rd_end
+);
+begin
+@(negedge adc_rd_n);
+#1;
+rd_start=clocks;
+#(DATA_ACCESS_NS-1.0);
+adc_db=value;
+adc_fd=fd_value;
+@(posedge adc_rd_n);
+#1;
+rd_end=clocks;
+if(rd_end-rd_start!=low_cycles)
+$fatal(1,"ADC FINAL: RD bajo %0d ciclos, se esperaban %0d",
+rd_end-rd_start,low_cycles);
+adc_db=8'hzz;
+adc_fd=1'bz;
+end
+endtask
+task automatic publish_word(input[15:0]expected_word,input realtime conversion_ns);
+integer cs_start;
+integer msb_start,msb_end,lsb_start,lsb_end;
+integer initial_reads,initial_samples;
+begin
+initial_reads=reads;
+initial_samples=published;
+finish_conversion(conversion_ns);
+@(negedge adc_cs_n);
+#1;
+cs_start=clocks;
+send_byte(expected_word[15:8],1'b1,10,msb_start,msb_end);
+send_byte(expected_word[7:0],1'b1,2,lsb_start,lsb_end);
+@(posedge sample_valid);
+#1;
+if(msb_start-cs_start!=1||lsb_start-msb_end!=1||clocks-lsb_end!=1)
+$fatal(1,"ADC FINAL: tiempos de CS, separación RD o publicación incorrectos");
+if(reads-initial_reads!=2||published-initial_samples!=1||
+sample_signed!==$signed(expected_word)||fault_latched||!adc_cs_n||!adc_rd_n)
+$fatal(1,"ADC FINAL: muestra %h, esperada %h",sample_signed,expected_word);
+result_ready=1'b0;
+@(posedge clk);
+#1;
+if(sample_valid)$fatal(1,"ADC FINAL: sample_valid debe durar un ciclo");
+end
+endtask
+task automatic expect_fault(input[3:0]expected_code,input integer expected_published);
+integer conversion_at_fault,reads_at_fault;
+begin
+wait(fault_latched===1'b1);
+#1;
+if(fault_code!==expected_code||!adc_cs_n||!adc_rd_n||adc_convst||sample_valid)
+$fatal(1,"ADC FINAL: diagnóstico %0d, esperado %0d",fault_code,expected_code);
+conversion_at_fault=conversions;
+reads_at_fault=reads;
+repeat(SAMPLE_PERIOD_CYCLES+1)@(posedge clk);
+#1;
+if(!fault_latched||fault_code!==expected_code||conversions!=conversion_at_fault||
+reads!=reads_at_fault||published!=expected_published)
+$fatal(1,"ADC FINAL: el fallo %0d no detuvo adquisición hasta reset",expected_code);
+end
+endtask
+integer started;
+integer next_start;
+integer ignored_rd_start,ignored_rd_end;
+integer samples_before;
+initial begin
+reset_reader();
+start_conversion(last_reset_fall+2,started);
+next_start=started+SAMPLE_PERIOD_CYCLES;
+publish_word(16'h0000,3450.0);
+start_conversion(next_start,started);
+next_start=started+SAMPLE_PERIOD_CYCLES;
+publish_word(16'h7fff,4200.0);
+start_conversion(next_start,started);
+next_start=started+SAMPLE_PERIOD_CYCLES;
+publish_word(16'h8000,3850.0);
+start_conversion(next_start,started);
+next_start=started+SAMPLE_PERIOD_CYCLES;
+publish_word(16'hffff,4200.0);
+start_conversion(next_start,started);
+publish_word(16'h93c7,3450.0);
+samples_before=published;
+reset_reader();
+start_conversion(last_reset_fall+2,started);
+expect_fault(4'd1,samples_before);
+reset_reader();
+start_conversion(last_reset_fall+2,started);
+#16;
+adc_busy=1'b1;
+expect_fault(4'd2,samples_before);
+reset_reader();
+start_conversion(last_reset_fall+2,started);
+finish_conversion(3450.0);
+send_byte(8'h42,1'b0,10,ignored_rd_start,ignored_rd_end);
+expect_fault(4'd3,samples_before);
+reset_reader();
+start_conversion(last_reset_fall+2,started);
+finish_conversion(3850.0);
+send_byte(8'h96,1'b1,10,ignored_rd_start,ignored_rd_end);
+send_byte(8'h10,1'bz,2,ignored_rd_start,ignored_rd_end);
+expect_fault(4'd3,samples_before);
+reset_reader();
+start_conversion(last_reset_fall+2,started);
+finish_conversion(3450.0);
+@(negedge adc_rd_n);
+#1;
+adc_busy=1'b1;
+expect_fault(4'd4,samples_before);
+reset_reader();
+start_conversion(last_reset_fall+2,started);
+publish_word(16'h28a5,3450.0);
+adc_busy=1'b1;
+samples_before=published;
+expect_fault(4'd5,samples_before);
+reset_reader();
+start_conversion(last_reset_fall+2,started);
+finish_conversion(3450.0);
+@(negedge adc_rd_n);
+reset_reader();
+if(published!=samples_before)
+$fatal(1,"ADC FINAL: reset en lectura publicó datos parciales");
+start_conversion(last_reset_fall+2,started);
+publish_word(16'hf0a6,4200.0);
+$display("PASS: ADC FINAL FD73, %0d muestras, MSB/LSB, 135 ciclos, fallos 1..5 y recuperación",published);
+done=1'b1;
+if(STANDALONE)$finish;
+end
+initial begin
+#250000;
+if(!done)$fatal(1,"ADC FINAL: tiempo máximo del banco excedido");
+end
+endmodule
+`timescale 1ns/1ps
+module tb_presentation_overlay#(
+parameter bit STANDALONE=1'b1
+)(
+output reg done=1'b0
+);
+localparam integer RAW_STAGES=2;
+localparam integer OVERLAY_STAGES=2;
+localparam integer TOTAL_STAGES=RAW_STAGES+OVERLAY_STAGES;
+localparam[23:0]TEXT=24'hacb8c8;
+localparam[23:0]TITLE=24'he8eef6;
+localparam[23:0]TICK=24'h758498;
+localparam[23:0]RED=24'hff0000;
+localparam[23:0]GRAY=24'h202020;
+reg pixel_clk=1'b0;
+reg wr_clk27=1'b0;
+reg rst_n=1'b0;
+reg[10:0]x=11'd0;
+reg[9:0]y=10'd0;
+reg mode=1'b0;
+reg frame_start=1'b0;
+reg adc_fault=1'b0;
+reg processor_fault=1'b0;
+reg display_fault=1'b0;
+reg[3:0]adc_code=4'd0;
+reg[3:0]processor_code=4'd0;
+reg[23:0]source_rgb=24'd0;
+reg[2:0]source_controls=3'd0;
+reg[23:0]raw_rgb_q,raw_rgb;
+reg[2:0]raw_controls_q,raw_controls;
+wire[10:0]diag_x;
+wire[9:0]diag_y;
+wire[23:0]diagnostic_rgb;
+wire[23:0]rgb_out;
+wire de_out,hsync_out,vsync_out;
+always@(posedge pixel_clk or negedge rst_n)begin
+if(!rst_n)begin
+raw_rgb_q<=24'd0;
+raw_rgb<=24'd0;
+raw_controls_q<=3'd0;
+raw_controls<=3'd0;
+end else begin
+raw_rgb_q<=source_rgb;
+raw_rgb<=raw_rgb_q;
+raw_controls_q<=source_controls;
+raw_controls<=raw_controls_q;
+end
+end
+presentation_diagnostic_layout layout(
+.x(x),.y(y),.diag_x(diag_x),.diag_y(diag_y)
+);
+diagnostic_overlay diagnostic(
+.wr_clk27(wr_clk27),.wr_rst_n(rst_n),.pix_clk(pixel_clk),.pix_rst_n(rst_n),
+.pixel_frame_start(frame_start),.pixel_x(diag_x),.pixel_y(diag_y),
+.video_de(raw_controls[2]),.in_rgb(raw_rgb),.adc_fault(adc_fault),
+.adc_code(adc_code),.processor_fault(processor_fault),
+.processor_code(processor_code),.display_fault(display_fault),.out_rgb(diagnostic_rgb)
+);
+presentation_overlay dut(
+.pixel_clk(pixel_clk),.rst_n(rst_n),.x(x),.y(y),.mode(mode),
+.rgb_in(diagnostic_rgb),.de_in(raw_controls[2]),
+.hsync_in(raw_controls[1]),.vsync_in(raw_controls[0]),
+.rgb_out(rgb_out),.de_out(de_out),.hsync_out(hsync_out),.vsync_out(vsync_out)
+);
+always#6.734pixel_clk=~pixel_clk;
+always#18.518wr_clk27=~wr_clk27;
+reg[47:0]expected[0:TOTAL_STAGES-1];
+reg[47:0]expected_pixel;
+integer checks=0;
+integer stage;
+task automatic reset_pipeline;
+begin
+@(negedge pixel_clk);
+rst_n=1'b0;
+frame_start=1'b0;
+adc_fault=1'b0;
+processor_fault=1'b0;
+display_fault=1'b0;
+adc_code=4'd0;
+processor_code=4'd0;
+source_rgb=24'd0;
+source_controls=3'd0;
+for(stage=0;stage<TOTAL_STAGES;stage=stage+1)
+expected[stage]=48'd0;
+repeat(2)@(posedge wr_clk27);
+#1;
+if({rgb_out,de_out,hsync_out,vsync_out}!==27'd0)
+$fatal(1,"Reset no limpia RGB/DE/HS/VS");
+@(negedge pixel_clk);
+rst_n=1'b1;
+end
+endtask
+task automatic send_pixel(
+input[10:0]col,
+input[9:0]row,
+input fft_mode,
+input[23:0]in_color,
+input[2:0]controls,
+input[23:0]compare_color
+);
+begin
+@(negedge pixel_clk);
+x=col;
+y=row;
+mode=fft_mode;
+source_rgb=in_color;
+source_controls=controls;
+for(stage=TOTAL_STAGES-1;stage>0;stage=stage-1)
+expected[stage]=expected[stage-1];
+expected[0]={col,row,controls,compare_color};
+expected_pixel=expected[TOTAL_STAGES-1];
+@(posedge pixel_clk);
+#1;
+if({de_out,hsync_out,vsync_out}!==expected_pixel[26:24])
+$fatal(1,"Controles corridos en (%0d,%0d): %b vs %b",
+expected_pixel[47:37],expected_pixel[36:27],
+{de_out,hsync_out,vsync_out},expected_pixel[26:24]);
+if(rgb_out!==expected_pixel[23:0])
+$fatal(1,"RGB distinto en (%0d,%0d): %06h vs %06h",
+expected_pixel[47:37],expected_pixel[36:27],
+rgb_out,expected_pixel[23:0]);
+checks=checks+1;
+end
+endtask
+task automatic expect_passthrough(
+input[10:0]col,
+input[9:0]row,
+input fft_mode,
+input[23:0]color,
+input[2:0]controls
+);
+begin
+send_pixel(col,row,fft_mode,color,controls,
+controls[2]?color:24'd0);
+end
+endtask
+task automatic scan_boxes(input integer count);
+integer box;
+reg[10:0]left;
+reg[23:0]box_rgb;
+begin
+for(box=0;box<8;box=box+1)begin
+left=11'd128+11'd16*box;
+box_rgb=(box<count)?RED:GRAY;
+send_pixel(left,10'd103,1'b0,24'h1b325f,3'b111,box_rgb);
+send_pixel(left+11'd11,10'd114,1'b1,24'h869ab3,3'b101,box_rgb);
+expect_passthrough(left-11'd1,10'd103,1'b0,24'h009596,3'b110);
+expect_passthrough(left+11'd12,10'd114,1'b1,24'h01828b,3'b100);
+expect_passthrough(left,10'd102,1'b0,24'h353896,3'b101);
+expect_passthrough(left,10'd115,1'b1,24'h9a27cb,3'b110);
+expect_passthrough(left,10'd103,1'b0,24'h27cab5,3'b011);
+end
+end
+endtask
+task automatic flush_pipeline;
+integer i;
+begin
+for(i=0;i<TOTAL_STAGES;i=i+1)
+expect_passthrough(11'd1649,10'd749,1'b0,24'hb19ca2,{1'b0,i[1:0]});
+end
+endtask
+integer sample;
+integer i;
+integer code;
+reg[10:0]probe_x;
+reg[9:0]probe_y;
+reg[23:0]probe_rgb;
+initial begin
+reset_pipeline();
+for(sample=0;sample<2;sample=sample+1)begin
+expect_passthrough(11'd127,10'd127,sample[0],24'h19375a,3'b100);
+expect_passthrough(11'd1160,10'd640,sample[0],24'hb78126,3'b111);
+for(i=0;i<256;i=i+1)begin
+probe_x=11'd128+((i*11'd241)&11'd1023);
+probe_y=10'd128+((i*10'd171)&10'd511);
+probe_rgb={i[7:0],i[7:0]^8'hfc,i[7:0]+8'h2d};
+expect_passthrough(probe_x,probe_y,sample[0],probe_rgb,{1'b1,i[1:0]});
+end
+end
+send_pixel(11'd128,10'd20,1'b0,24'h112233,3'b100,TEXT);
+send_pixel(11'd132,10'd40,1'b1,24'h112233,3'b111,TITLE);
+send_pixel(11'd130,10'd82,1'b0,24'h112233,3'b110,TEXT);
+expect_passthrough(11'd768,10'd105,1'b1,24'h112233,3'b101);
+send_pixel(11'd1024,10'd9,1'b1,24'h112233,3'b110,24'h454a52);
+send_pixel(11'd1023,10'd8,1'b1,24'h112233,3'b110,24'h9aa3af);
+send_pixel(11'd1036,10'd13,1'b1,24'h112233,3'b110,24'hffffff);
+expect_passthrough(11'd1022,10'd8,1'b0,24'h112233,3'b101);
+expect_passthrough(11'd1036,10'd13,1'b0,24'h112233,3'b011);
+send_pixel(11'd552,10'd690,1'b0,24'h324567,3'b100,TEXT);
+send_pixel(11'd516,10'd690,1'b1,24'h456748,3'b110,TEXT);
+expect_passthrough(11'd516,10'd690,1'b0,24'h789321,3'b100);
+send_pixel(11'd1135,10'd656,1'b1,24'h27486a,3'b111,TEXT);
+send_pixel(11'd1115,10'd656,1'b0,24'ha47651,3'b101,TEXT);
+send_pixel(11'd128,10'd645,1'b1,24'h192921,3'b110,TICK);
+send_pixel(11'd384,10'd645,1'b0,24'h352911,3'b100,TICK);
+send_pixel(11'd640,10'd645,1'b1,24'h124921,3'b101,TICK);
+send_pixel(11'd896,10'd645,1'b0,24'h338472,3'b110,TICK);
+send_pixel(11'd1148,10'd645,1'b0,24'h803562,3'b100,TICK);
+send_pixel(11'd1152,10'd645,1'b1,24'h265416,3'b111,TICK);
+expect_passthrough(11'd1148,10'd645,1'b1,24'h245962,3'b110);
+expect_passthrough(11'd1152,10'd645,1'b0,24'h129866,3'b101);
+scan_boxes(0);
+flush_pipeline();
+for(code=1;code<=8;code=code+1)begin
+reset_pipeline();
+@(negedge wr_clk27);
+adc_fault=(code<=5);
+adc_code=code[3:0];
+processor_fault=(code==6||code==7);
+processor_code=(code==6)?4'd1:4'd2;
+display_fault=(code==8);
+repeat(4)@(posedge wr_clk27);
+@(negedge pixel_clk);
+frame_start=1'b1;
+@(negedge pixel_clk);
+frame_start=1'b0;
+scan_boxes(code);
+flush_pipeline();
+end
+reset_pipeline();
+scan_boxes(0);
+flush_pipeline();
+$display("PASS: PRESENTATION_OVERLAY, %0d ciclos, grafica, texto, logo, diagnosticos 0..8 y controles",checks);
+done=1'b1;
+if(STANDALONE)$finish;
+end
+initial begin
+#50000;
+if(!done)$fatal(1,"PRESENTACION: tiempo maximo excedido");
+end
+endmodule
+module tb_entrega;
+wire adc_done;
+wire display_done;
+tb_adc_final#(.STANDALONE(0))adc_test(.done(adc_done));
+tb_presentation_overlay#(.STANDALONE(0))display_test(.done(display_done));
+initial begin
+wait(adc_done&&display_done);
+$display("PASS: entrega, lector y presentación");
+$finish;
+end
+initial begin
+#2000000;
+if(!adc_done||!display_done)
+$fatal(1,"ENTREGA: se agotó el tiempo de prueba");
+end
+endmodule
+`endif

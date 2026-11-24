@@ -1,0 +1,29 @@
+<?xml version="1" encoding="UTF-8"?>
+<!DOCTYPE gowin-fpga-project>
+<Project>
+    <Template>FPGA</Template>
+    <Version>5</Version>
+    <Device name="GW2AR-18C" pn="GW2AR-LV18QN88C8/I7">gw2ar18c-000</Device>
+    <FileList>
+        <File path="src/analyzer_core.sv" type="file.verilog" enable="1"/>
+        <File path="src/presentation_font.v" type="file.verilog" enable="1"/>
+        <File path="src/presentation_logo.v" type="file.verilog" enable="1"/>
+        <File path="src/presentation_overlay.sv" type="file.verilog" enable="1"/>
+        <File path="src/display_buffer.sv" type="file.verilog" enable="1"/>
+        <File path="src/fft256_core.sv" type="file.verilog" enable="1"/>
+        <File path="src/fft_butterfly.sv" type="file.verilog" enable="1"/>
+        <File path="src/fft_magnitude.sv" type="file.verilog" enable="1"/>
+        <File path="src/fft_twiddle_rom.sv" type="file.verilog" enable="1"/>
+        <File path="src/plot_renderer.sv" type="file.verilog" enable="1"/>
+        <File path="src/sample_capture.sv" type="file.verilog" enable="1"/>
+        <File path="src/signal_processor.sv" type="file.verilog" enable="1"/>
+        <File path="src/tang20k_top.sv" type="file.verilog" enable="1"/>
+        <File path="src/tmds_encoder.sv" type="file.verilog" enable="1"/>
+        <File path="src/video_timing_720p.sv" type="file.verilog" enable="1"/>
+        <File path="src/view_selector.sv" type="file.verilog" enable="1"/>
+        <File path="src/ad7606_byte_reader_v1_after_busy.sv" type="file.verilog" enable="1"/>
+        <File path="src/diagnostic_overlay.sv" type="file.verilog" enable="1"/>
+        <File path="constraints/tang20k_fd73_propuesto.cst" type="file.cst" enable="1"/>
+        <File path="constraints/diagnostic.sdc" type="file.sdc" enable="1"/>
+    </FileList>
+</Project>

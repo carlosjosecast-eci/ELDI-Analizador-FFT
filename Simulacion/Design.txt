@@ -1,0 +1,2288 @@
+`timescale 1ns/1ps
+`timescale 1ns/1ps
+module view_selector#(
+parameter integer DEBOUNCE_CYCLES=1_485_000
+)(
+input wire clk,
+input wire rst_n,
+input wire key_s2,
+input wire frame_start,
+output reg mode_fft
+);
+localparam integer COUNT_WIDTH=
+(DEBOUNCE_CYCLES>1)?$clog2(DEBOUNCE_CYCLES):1;
+localparam[COUNT_WIDTH-1:0]LAST_COUNT=DEBOUNCE_CYCLES-1;
+reg key_meta;
+reg key_sync;
+reg key_stable;
+reg[COUNT_WIDTH-1:0]opposite_count;
+reg pending_mode;
+always@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+key_meta<=1'b0;
+key_sync<=1'b0;
+key_stable<=1'b0;
+opposite_count<={COUNT_WIDTH{1'b0}};
+pending_mode<=1'b0;
+mode_fft<=1'b0;
+end else begin
+key_meta<=key_s2;
+key_sync<=key_meta;
+if(key_sync==key_stable)begin
+opposite_count<={COUNT_WIDTH{1'b0}};
+end else if(opposite_count==LAST_COUNT)begin
+opposite_count<={COUNT_WIDTH{1'b0}};
+key_stable<=key_sync;
+if(key_sync)
+pending_mode<=~pending_mode;
+end else begin
+opposite_count<=opposite_count+1'b1;
+end
+if(frame_start)
+mode_fft<=pending_mode;
+end
+end
+endmodule
+`timescale 1ns/1ps
+module ad7606_byte_reader#(
+parameter integer STARTUP_CYCLES=1_350_000
+)(
+input wire clk,
+input wire rst_n,
+input wire adc_busy,
+input wire adc_fd,
+input wire[7:0]adc_db,
+output reg adc_convst,
+output reg adc_cs_n,
+output reg adc_rd_n,
+output reg adc_reset,
+output reg signed[15:0]sample_signed,
+output reg sample_valid,
+output reg fault_latched,
+output reg[3:0]fault_code
+);
+localparam integer STARTUP_WIDTH=
+(STARTUP_CYCLES>1)?$clog2(STARTUP_CYCLES):1;
+localparam[7:0]PERIOD_LAST=8'd134;
+localparam[7:0]BUSY_RISE_LAST=8'd7;
+localparam[7:0]BUSY_FALL_LAST=8'd127;
+localparam[3:0]MSB_RD_LAST=4'd9;
+localparam[3:0]LSB_RD_LAST=4'd1;
+typedef enum logic[3:0]{
+WAIT_POWER,HOLD_RESET,RESET_GAP,WAIT_BUSY_RISE,WAIT_BUSY_FALL,
+READ_SETUP,READ_LOW,READ_GAP,READ_COMMIT,CONVERSION_DONE
+}state_t;
+state_t state;
+reg[STARTUP_WIDTH-1:0]startup_count;
+reg[1:0]reset_count;
+reg reset_gap_count;
+reg[7:0]cycle_count;
+reg[3:0]rd_count;
+reg second_byte;
+reg busy_low_seen;
+reg[7:0]msb;
+reg signed[15:0]pending_sample;
+reg busy_meta,busy_sync;
+reg[3:0]pending_fault;
+wire running=(state!=WAIT_POWER)&&(state!=HOLD_RESET)&&(state!=RESET_GAP);
+wire reading=(state==READ_SETUP)||(state==READ_LOW)||
+(state==READ_GAP)||(state==READ_COMMIT);
+wire rd_due=(rd_count==(second_byte?LSB_RD_LAST:MSB_RD_LAST));
+always@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+busy_meta<=1'b0;
+busy_sync<=1'b0;
+end else begin
+busy_meta<=adc_busy;
+busy_sync<=busy_meta;
+end
+end
+always_comb begin
+pending_fault=4'd0;
+if(reading&&busy_sync)
+pending_fault=4'd4;
+else if((state==WAIT_BUSY_RISE)&&!busy_sync&&(cycle_count>=BUSY_RISE_LAST))
+pending_fault=4'd1;
+else if((state==WAIT_BUSY_FALL)&&busy_sync&&(cycle_count>=BUSY_FALL_LAST))
+pending_fault=4'd2;
+else if(running&&(cycle_count==PERIOD_LAST)&&
+((state!=CONVERSION_DONE)||busy_sync))
+pending_fault=4'd5;
+else if((state==READ_LOW)&&rd_due)begin
+case(adc_fd)
+1'b1:begin end
+default:pending_fault=4'd3;
+endcase
+end
+end
+always@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+state<=WAIT_POWER;
+startup_count<='0;
+reset_count<='0;
+reset_gap_count<=1'b0;
+cycle_count<='0;
+rd_count<='0;
+second_byte<=1'b0;
+busy_low_seen<=1'b0;
+msb<='0;
+pending_sample<='0;
+adc_convst<=1'b0;
+adc_cs_n<=1'b1;
+adc_rd_n<=1'b1;
+adc_reset<=1'b0;
+sample_signed<='0;
+sample_valid<=1'b0;
+fault_latched<=1'b0;
+fault_code<=4'd0;
+end else begin
+sample_valid<=1'b0;
+if(fault_latched||(pending_fault!=4'd0))begin
+adc_convst<=1'b0;
+adc_cs_n<=1'b1;
+adc_rd_n<=1'b1;
+adc_reset<=1'b0;
+if(!fault_latched)begin
+fault_latched<=1'b1;
+fault_code<=pending_fault;
+end
+end else if(!running)begin
+case(state)
+WAIT_POWER:begin
+if(startup_count==STARTUP_CYCLES-1)begin
+reset_count<=2'd0;
+adc_reset<=1'b1;
+state<=HOLD_RESET;
+end else startup_count<=startup_count+1'b1;
+end
+HOLD_RESET:begin
+if(reset_count==2'd3)begin
+reset_gap_count<=1'b0;
+adc_reset<=1'b0;
+state<=RESET_GAP;
+end else reset_count<=reset_count+1'b1;
+end
+RESET_GAP:begin
+if(reset_gap_count)begin
+cycle_count<=8'd0;
+adc_convst<=1'b1;
+state<=WAIT_BUSY_RISE;
+end else reset_gap_count<=1'b1;
+end
+default:state<=WAIT_POWER;
+endcase
+end else if(cycle_count==PERIOD_LAST)begin
+cycle_count<=8'd0;
+adc_convst<=1'b1;
+state<=WAIT_BUSY_RISE;
+end else begin
+cycle_count<=cycle_count+1'b1;
+if(cycle_count==8'd1)adc_convst<=1'b0;
+case(state)
+WAIT_BUSY_RISE:begin
+if(busy_sync)begin
+busy_low_seen<=1'b0;
+state<=WAIT_BUSY_FALL;
+end
+end
+WAIT_BUSY_FALL:begin
+if(busy_sync)busy_low_seen<=1'b0;
+else if(busy_low_seen)begin
+second_byte<=1'b0;
+adc_cs_n<=1'b0;
+state<=READ_SETUP;
+end else busy_low_seen<=1'b1;
+end
+READ_SETUP,READ_GAP:begin
+adc_rd_n<=1'b0;
+rd_count<=4'd0;
+state<=READ_LOW;
+end
+READ_LOW:begin
+if(rd_due)begin
+adc_rd_n<=1'b1;
+if(second_byte)begin
+pending_sample<=$signed({msb,adc_db});
+state<=READ_COMMIT;
+end else begin
+msb<=adc_db;
+second_byte<=1'b1;
+state<=READ_GAP;
+end
+end else rd_count<=rd_count+1'b1;
+end
+READ_COMMIT:begin
+adc_cs_n<=1'b1;
+sample_signed<=pending_sample;
+sample_valid<=1'b1;
+state<=CONVERSION_DONE;
+end
+default:begin end
+endcase
+end
+end
+end
+endmodule
+`timescale 1ns/1ps
+module sample_capture(
+input wire clk,
+input wire rst_n,
+input wire sample_valid,
+input wire signed[15:0]sample_signed,
+output reg block_valid,
+output reg block_bank,
+output reg[31:0]block_seq,
+input wire block_release,
+output reg overrun_latched,
+input wire rd_en,
+input wire rd_bank,
+input wire[7:0]rd_addr,
+output wire signed[15:0]rd_sample,
+output reg rd_valid
+);
+reg signed[15:0]bank0[0:255];
+reg signed[15:0]bank1[0:255];
+reg signed[15:0]bank0_read;
+reg signed[15:0]bank1_read;
+reg write_bank;
+reg[7:0]write_addr;
+reg[31:0]next_seq;
+reg read_bank_q;
+wire write_accept=rst_n&&sample_valid&&!overrun_latched;
+wire read_accept=rst_n&&rd_en&&block_valid&&
+(rd_bank==block_bank);
+always@(posedge clk)begin
+if(write_accept&&!write_bank)
+bank0[write_addr]<=sample_signed;
+if(read_accept&&!rd_bank)
+bank0_read<=bank0[rd_addr];
+end
+always@(posedge clk)begin
+if(write_accept&&write_bank)
+bank1[write_addr]<=sample_signed;
+if(read_accept&&rd_bank)
+bank1_read<=bank1[rd_addr];
+end
+assign rd_sample=read_bank_q?bank1_read:bank0_read;
+always@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+write_bank<=1'b0;
+write_addr<=8'd0;
+next_seq<=32'd0;
+block_valid<=1'b0;
+block_bank<=1'b0;
+block_seq<=32'd0;
+overrun_latched<=1'b0;
+read_bank_q<=1'b0;
+rd_valid<=1'b0;
+end else begin
+rd_valid<=read_accept;
+if(read_accept)
+read_bank_q<=rd_bank;
+if(!overrun_latched)begin
+if(block_release&&block_valid)
+block_valid<=1'b0;
+if(sample_valid)begin
+if(write_addr==8'd255)begin
+if(block_valid&&!block_release)begin
+overrun_latched<=1'b1;
+end else begin
+block_valid<=1'b1;
+block_bank<=write_bank;
+block_seq<=next_seq;
+next_seq<=next_seq+32'd1;
+write_bank<=~write_bank;
+write_addr<=8'd0;
+end
+end else begin
+write_addr<=write_addr+8'd1;
+end
+end
+end
+end
+end
+endmodule
+`timescale 1ns/1ps
+module fft_twiddle_rom(
+input logic clk,
+input logic en,
+input logic[6:0]addr,
+output logic signed[17:0]w_re,
+output logic signed[17:0]w_im
+);
+always_ff@(posedge clk)begin
+if(en)begin
+case(addr)
+7'd0:begin w_re<=18'sd65536;w_im<=18'sd0;end
+7'd1:begin w_re<=18'sd65516;w_im<=-18'sd1608;end
+7'd2:begin w_re<=18'sd65457;w_im<=-18'sd3216;end
+7'd3:begin w_re<=18'sd65358;w_im<=-18'sd4821;end
+7'd4:begin w_re<=18'sd65220;w_im<=-18'sd6424;end
+7'd5:begin w_re<=18'sd65043;w_im<=-18'sd8022;end
+7'd6:begin w_re<=18'sd64827;w_im<=-18'sd9616;end
+7'd7:begin w_re<=18'sd64571;w_im<=-18'sd11204;end
+7'd8:begin w_re<=18'sd64277;w_im<=-18'sd12785;end
+7'd9:begin w_re<=18'sd63944;w_im<=-18'sd14359;end
+7'd10:begin w_re<=18'sd63572;w_im<=-18'sd15924;end
+7'd11:begin w_re<=18'sd63162;w_im<=-18'sd17479;end
+7'd12:begin w_re<=18'sd62714;w_im<=-18'sd19024;end
+7'd13:begin w_re<=18'sd62228;w_im<=-18'sd20557;end
+7'd14:begin w_re<=18'sd61705;w_im<=-18'sd22078;end
+7'd15:begin w_re<=18'sd61145;w_im<=-18'sd23586;end
+7'd16:begin w_re<=18'sd60547;w_im<=-18'sd25080;end
+7'd17:begin w_re<=18'sd59914;w_im<=-18'sd26558;end
+7'd18:begin w_re<=18'sd59244;w_im<=-18'sd28020;end
+7'd19:begin w_re<=18'sd58538;w_im<=-18'sd29466;end
+7'd20:begin w_re<=18'sd57798;w_im<=-18'sd30893;end
+7'd21:begin w_re<=18'sd57022;w_im<=-18'sd32303;end
+7'd22:begin w_re<=18'sd56212;w_im<=-18'sd33692;end
+7'd23:begin w_re<=18'sd55368;w_im<=-18'sd35062;end
+7'd24:begin w_re<=18'sd54491;w_im<=-18'sd36410;end
+7'd25:begin w_re<=18'sd53581;w_im<=-18'sd37736;end
+7'd26:begin w_re<=18'sd52639;w_im<=-18'sd39040;end
+7'd27:begin w_re<=18'sd51665;w_im<=-18'sd40320;end
+7'd28:begin w_re<=18'sd50660;w_im<=-18'sd41576;end
+7'd29:begin w_re<=18'sd49624;w_im<=-18'sd42806;end
+7'd30:begin w_re<=18'sd48559;w_im<=-18'sd44011;end
+7'd31:begin w_re<=18'sd47464;w_im<=-18'sd45190;end
+7'd32:begin w_re<=18'sd46341;w_im<=-18'sd46341;end
+7'd33:begin w_re<=18'sd45190;w_im<=-18'sd47464;end
+7'd34:begin w_re<=18'sd44011;w_im<=-18'sd48559;end
+7'd35:begin w_re<=18'sd42806;w_im<=-18'sd49624;end
+7'd36:begin w_re<=18'sd41576;w_im<=-18'sd50660;end
+7'd37:begin w_re<=18'sd40320;w_im<=-18'sd51665;end
+7'd38:begin w_re<=18'sd39040;w_im<=-18'sd52639;end
+7'd39:begin w_re<=18'sd37736;w_im<=-18'sd53581;end
+7'd40:begin w_re<=18'sd36410;w_im<=-18'sd54491;end
+7'd41:begin w_re<=18'sd35062;w_im<=-18'sd55368;end
+7'd42:begin w_re<=18'sd33692;w_im<=-18'sd56212;end
+7'd43:begin w_re<=18'sd32303;w_im<=-18'sd57022;end
+7'd44:begin w_re<=18'sd30893;w_im<=-18'sd57798;end
+7'd45:begin w_re<=18'sd29466;w_im<=-18'sd58538;end
+7'd46:begin w_re<=18'sd28020;w_im<=-18'sd59244;end
+7'd47:begin w_re<=18'sd26558;w_im<=-18'sd59914;end
+7'd48:begin w_re<=18'sd25080;w_im<=-18'sd60547;end
+7'd49:begin w_re<=18'sd23586;w_im<=-18'sd61145;end
+7'd50:begin w_re<=18'sd22078;w_im<=-18'sd61705;end
+7'd51:begin w_re<=18'sd20557;w_im<=-18'sd62228;end
+7'd52:begin w_re<=18'sd19024;w_im<=-18'sd62714;end
+7'd53:begin w_re<=18'sd17479;w_im<=-18'sd63162;end
+7'd54:begin w_re<=18'sd15924;w_im<=-18'sd63572;end
+7'd55:begin w_re<=18'sd14359;w_im<=-18'sd63944;end
+7'd56:begin w_re<=18'sd12785;w_im<=-18'sd64277;end
+7'd57:begin w_re<=18'sd11204;w_im<=-18'sd64571;end
+7'd58:begin w_re<=18'sd9616;w_im<=-18'sd64827;end
+7'd59:begin w_re<=18'sd8022;w_im<=-18'sd65043;end
+7'd60:begin w_re<=18'sd6424;w_im<=-18'sd65220;end
+7'd61:begin w_re<=18'sd4821;w_im<=-18'sd65358;end
+7'd62:begin w_re<=18'sd3216;w_im<=-18'sd65457;end
+7'd63:begin w_re<=18'sd1608;w_im<=-18'sd65516;end
+7'd64:begin w_re<=18'sd0;w_im<=-18'sd65536;end
+7'd65:begin w_re<=-18'sd1608;w_im<=-18'sd65516;end
+7'd66:begin w_re<=-18'sd3216;w_im<=-18'sd65457;end
+7'd67:begin w_re<=-18'sd4821;w_im<=-18'sd65358;end
+7'd68:begin w_re<=-18'sd6424;w_im<=-18'sd65220;end
+7'd69:begin w_re<=-18'sd8022;w_im<=-18'sd65043;end
+7'd70:begin w_re<=-18'sd9616;w_im<=-18'sd64827;end
+7'd71:begin w_re<=-18'sd11204;w_im<=-18'sd64571;end
+7'd72:begin w_re<=-18'sd12785;w_im<=-18'sd64277;end
+7'd73:begin w_re<=-18'sd14359;w_im<=-18'sd63944;end
+7'd74:begin w_re<=-18'sd15924;w_im<=-18'sd63572;end
+7'd75:begin w_re<=-18'sd17479;w_im<=-18'sd63162;end
+7'd76:begin w_re<=-18'sd19024;w_im<=-18'sd62714;end
+7'd77:begin w_re<=-18'sd20557;w_im<=-18'sd62228;end
+7'd78:begin w_re<=-18'sd22078;w_im<=-18'sd61705;end
+7'd79:begin w_re<=-18'sd23586;w_im<=-18'sd61145;end
+7'd80:begin w_re<=-18'sd25080;w_im<=-18'sd60547;end
+7'd81:begin w_re<=-18'sd26558;w_im<=-18'sd59914;end
+7'd82:begin w_re<=-18'sd28020;w_im<=-18'sd59244;end
+7'd83:begin w_re<=-18'sd29466;w_im<=-18'sd58538;end
+7'd84:begin w_re<=-18'sd30893;w_im<=-18'sd57798;end
+7'd85:begin w_re<=-18'sd32303;w_im<=-18'sd57022;end
+7'd86:begin w_re<=-18'sd33692;w_im<=-18'sd56212;end
+7'd87:begin w_re<=-18'sd35062;w_im<=-18'sd55368;end
+7'd88:begin w_re<=-18'sd36410;w_im<=-18'sd54491;end
+7'd89:begin w_re<=-18'sd37736;w_im<=-18'sd53581;end
+7'd90:begin w_re<=-18'sd39040;w_im<=-18'sd52639;end
+7'd91:begin w_re<=-18'sd40320;w_im<=-18'sd51665;end
+7'd92:begin w_re<=-18'sd41576;w_im<=-18'sd50660;end
+7'd93:begin w_re<=-18'sd42806;w_im<=-18'sd49624;end
+7'd94:begin w_re<=-18'sd44011;w_im<=-18'sd48559;end
+7'd95:begin w_re<=-18'sd45190;w_im<=-18'sd47464;end
+7'd96:begin w_re<=-18'sd46341;w_im<=-18'sd46341;end
+7'd97:begin w_re<=-18'sd47464;w_im<=-18'sd45190;end
+7'd98:begin w_re<=-18'sd48559;w_im<=-18'sd44011;end
+7'd99:begin w_re<=-18'sd49624;w_im<=-18'sd42806;end
+7'd100:begin w_re<=-18'sd50660;w_im<=-18'sd41576;end
+7'd101:begin w_re<=-18'sd51665;w_im<=-18'sd40320;end
+7'd102:begin w_re<=-18'sd52639;w_im<=-18'sd39040;end
+7'd103:begin w_re<=-18'sd53581;w_im<=-18'sd37736;end
+7'd104:begin w_re<=-18'sd54491;w_im<=-18'sd36410;end
+7'd105:begin w_re<=-18'sd55368;w_im<=-18'sd35062;end
+7'd106:begin w_re<=-18'sd56212;w_im<=-18'sd33692;end
+7'd107:begin w_re<=-18'sd57022;w_im<=-18'sd32303;end
+7'd108:begin w_re<=-18'sd57798;w_im<=-18'sd30893;end
+7'd109:begin w_re<=-18'sd58538;w_im<=-18'sd29466;end
+7'd110:begin w_re<=-18'sd59244;w_im<=-18'sd28020;end
+7'd111:begin w_re<=-18'sd59914;w_im<=-18'sd26558;end
+7'd112:begin w_re<=-18'sd60547;w_im<=-18'sd25080;end
+7'd113:begin w_re<=-18'sd61145;w_im<=-18'sd23586;end
+7'd114:begin w_re<=-18'sd61705;w_im<=-18'sd22078;end
+7'd115:begin w_re<=-18'sd62228;w_im<=-18'sd20557;end
+7'd116:begin w_re<=-18'sd62714;w_im<=-18'sd19024;end
+7'd117:begin w_re<=-18'sd63162;w_im<=-18'sd17479;end
+7'd118:begin w_re<=-18'sd63572;w_im<=-18'sd15924;end
+7'd119:begin w_re<=-18'sd63944;w_im<=-18'sd14359;end
+7'd120:begin w_re<=-18'sd64277;w_im<=-18'sd12785;end
+7'd121:begin w_re<=-18'sd64571;w_im<=-18'sd11204;end
+7'd122:begin w_re<=-18'sd64827;w_im<=-18'sd9616;end
+7'd123:begin w_re<=-18'sd65043;w_im<=-18'sd8022;end
+7'd124:begin w_re<=-18'sd65220;w_im<=-18'sd6424;end
+7'd125:begin w_re<=-18'sd65358;w_im<=-18'sd4821;end
+7'd126:begin w_re<=-18'sd65457;w_im<=-18'sd3216;end
+7'd127:begin w_re<=-18'sd65516;w_im<=-18'sd1608;end
+endcase
+end
+end
+endmodule
+`timescale 1ns/1ps
+module fft_butterfly(
+input logic clk,
+input logic rst_n,
+input logic start,
+input logic signed[17:0]a_re,
+input logic signed[17:0]a_im,
+input logic signed[17:0]b_re,
+input logic signed[17:0]b_im,
+input logic signed[17:0]w_re,
+input logic signed[17:0]w_im,
+output logic busy,
+output logic done,
+output logic signed[17:0]y0_re,
+output logic signed[17:0]y0_im,
+output logic signed[17:0]y1_re,
+output logic signed[17:0]y1_im
+);
+typedef enum logic[1:0]{IDLE,MULTIPLY,SUM_PRODUCTS,OUTPUTS}state_t;
+state_t state;
+logic signed[17:0]a_re_reg,a_im_reg;
+logic signed[17:0]b_re_reg,b_im_reg;
+logic signed[17:0]w_re_reg,w_im_reg;
+logic signed[35:0]product_rr,product_ii,product_ri,product_ir;
+logic signed[36:0]rotated_re,rotated_im;
+wire signed[37:0]a_re_scaled=
+$signed({{20{a_re_reg[17]}},a_re_reg})<<<16;
+wire signed[37:0]a_im_scaled=
+$signed({{20{a_im_reg[17]}},a_im_reg})<<<16;
+wire signed[37:0]rotated_re_wide={rotated_re[36],rotated_re};
+wire signed[37:0]rotated_im_wide={rotated_im[36],rotated_im};
+function automatic logic signed[17:0]round_and_saturate(
+input logic signed[37:0]value
+);
+logic signed[38:0]extended_value;
+logic[38:0]magnitude;
+logic[38:0]rounded_magnitude;
+begin
+extended_value={value[37],value};
+if(value[37])
+magnitude=$unsigned(-extended_value);
+else
+magnitude=$unsigned(extended_value);
+rounded_magnitude=(magnitude+39'd65536)>>17;
+if(value[37])begin
+if(rounded_magnitude>=39'd131072)
+round_and_saturate=18'sh20000;
+else
+round_and_saturate=-$signed(rounded_magnitude[17:0]);
+end else begin
+if(rounded_magnitude>39'd131071)
+round_and_saturate=18'sh1ffff;
+else
+round_and_saturate=$signed(rounded_magnitude[17:0]);
+end
+end
+endfunction
+always_ff@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+state<=IDLE;
+busy<=1'b0;
+done<=1'b0;
+a_re_reg<='0;
+a_im_reg<='0;
+b_re_reg<='0;
+b_im_reg<='0;
+w_re_reg<='0;
+w_im_reg<='0;
+product_rr<='0;
+product_ii<='0;
+product_ri<='0;
+product_ir<='0;
+rotated_re<='0;
+rotated_im<='0;
+y0_re<='0;
+y0_im<='0;
+y1_re<='0;
+y1_im<='0;
+end else begin
+done<=1'b0;
+case(state)
+IDLE:begin
+if(start)begin
+a_re_reg<=a_re;
+a_im_reg<=a_im;
+b_re_reg<=b_re;
+b_im_reg<=b_im;
+w_re_reg<=w_re;
+w_im_reg<=w_im;
+busy<=1'b1;
+state<=MULTIPLY;
+end
+end
+MULTIPLY:begin
+product_rr<=b_re_reg*w_re_reg;
+product_ii<=b_im_reg*w_im_reg;
+product_ri<=b_re_reg*w_im_reg;
+product_ir<=b_im_reg*w_re_reg;
+state<=SUM_PRODUCTS;
+end
+SUM_PRODUCTS:begin
+rotated_re<=$signed({product_rr[35],product_rr})-
+$signed({product_ii[35],product_ii});
+rotated_im<=$signed({product_ri[35],product_ri})+
+$signed({product_ir[35],product_ir});
+state<=OUTPUTS;
+end
+OUTPUTS:begin
+y0_re<=round_and_saturate(a_re_scaled+rotated_re_wide);
+y0_im<=round_and_saturate(a_im_scaled+rotated_im_wide);
+y1_re<=round_and_saturate(a_re_scaled-rotated_re_wide);
+y1_im<=round_and_saturate(a_im_scaled-rotated_im_wide);
+busy<=1'b0;
+done<=1'b1;
+state<=IDLE;
+end
+endcase
+end
+end
+endmodule
+`timescale 1ns/1ps
+module fft256_core(
+input logic clk,
+input logic rst_n,
+input logic in_valid,
+input logic signed[15:0]in_sample,
+output wire in_ready,
+input logic start,
+output logic frame_loaded,
+output logic busy,
+output logic done,
+output logic results_ready,
+input logic rd_en,
+input logic[7:0]rd_addr,
+output wire signed[17:0]rd_re,
+output wire signed[17:0]rd_im,
+output logic rd_valid,
+output logic fault_latched,
+output logic[3:0]fault_code
+);
+typedef enum logic[2:0]{
+IDLE,READ_A,READ_B,BF_START,BF_WAIT,WRITE_A,WRITE_B
+}state_t;
+state_t state;
+logic[7:0]load_index;
+logic[2:0]stage_index;
+logic[7:0]group_base;
+logic[6:0]pair_index;
+wire[8:0]half_span=9'd1<<stage_index;
+wire[8:0]group_span=9'd2<<stage_index;
+wire[8:0]group_end={1'b0,group_base}+group_span;
+wire[8:0]address_a_wide={1'b0,group_base}+{2'b00,pair_index};
+wire[8:0]address_b_wide=address_a_wide+half_span;
+wire[7:0]address_a=address_a_wide[7:0];
+wire[7:0]address_b=address_b_wide[7:0];
+wire[6:0]twiddle_addr=pair_index<<(3'd7-stage_index);
+wire input_accept=in_valid&&in_ready;
+wire result_read_accept=rd_en&&results_ready&&!busy&&
+!input_accept&&!start&&!fault_latched;
+wire fault_pending=start&&(busy||!frame_loaded);
+wire[3:0]pending_fault_code=busy?4'd2:4'd1;
+logic[35:0]memory[0:255];
+logic[35:0]memory_q;
+logic memory_en,memory_we;
+logic[7:0]memory_addr;
+logic[35:0]memory_d;
+logic signed[17:0]operand_a_re,operand_a_im;
+wire signed[17:0]twiddle_re,twiddle_im;
+wire signed[17:0]result_a_re,result_a_im,result_b_re,result_b_im;
+wire butterfly_busy,butterfly_done;
+wire butterfly_start=(state==BF_START)&&!fault_latched&&!fault_pending;
+wire twiddle_en=(state==READ_A)&&!fault_latched&&!fault_pending;
+assign in_ready=rst_n&&!busy&&!frame_loaded&&!fault_latched;
+assign rd_re=$signed(memory_q[35:18]);
+assign rd_im=$signed(memory_q[17:0]);
+function automatic logic[7:0]reverse_bits(input logic[7:0]value);
+integer bit_index;
+begin
+for(bit_index=0;bit_index<8;bit_index=bit_index+1)
+reverse_bits[bit_index]=value[7-bit_index];
+end
+endfunction
+fft_twiddle_rom twiddles(
+.clk(clk),.en(twiddle_en),.addr(twiddle_addr),
+.w_re(twiddle_re),.w_im(twiddle_im)
+);
+fft_butterfly butterfly(
+.clk(clk),.rst_n(rst_n),.start(butterfly_start),
+.a_re(operand_a_re),.a_im(operand_a_im),
+.b_re($signed(memory_q[35:18])),.b_im($signed(memory_q[17:0])),
+.w_re(twiddle_re),.w_im(twiddle_im),
+.busy(butterfly_busy),.done(butterfly_done),
+.y0_re(result_a_re),.y0_im(result_a_im),
+.y1_re(result_b_re),.y1_im(result_b_im)
+);
+always_comb begin
+memory_en=1'b0;
+memory_we=1'b0;
+memory_addr='0;
+memory_d='0;
+if(rst_n&&!fault_latched&&!fault_pending)begin
+case(state)
+IDLE:begin
+if(input_accept)begin
+memory_en=1'b1;
+memory_we=1'b1;
+memory_addr=reverse_bits(load_index);
+memory_d={{2{in_sample[15]}},in_sample,18'd0};
+end else if(result_read_accept)begin
+memory_en=1'b1;
+memory_addr=rd_addr;
+end
+end
+READ_A:begin
+memory_en=1'b1;
+memory_addr=address_a;
+end
+READ_B:begin
+memory_en=1'b1;
+memory_addr=address_b;
+end
+WRITE_A:begin
+memory_en=1'b1;
+memory_we=1'b1;
+memory_addr=address_a;
+memory_d={result_a_re,result_a_im};
+end
+WRITE_B:begin
+memory_en=1'b1;
+memory_we=1'b1;
+memory_addr=address_b;
+memory_d={result_b_re,result_b_im};
+end
+default:begin end
+endcase
+end
+end
+always_ff@(posedge clk)begin
+if(memory_en)begin
+if(memory_we)
+memory[memory_addr]<=memory_d;
+else
+memory_q<=memory[memory_addr];
+end
+end
+always_ff@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+state<=IDLE;
+load_index<='0;
+stage_index<='0;
+group_base<='0;
+pair_index<='0;
+operand_a_re<='0;
+operand_a_im<='0;
+frame_loaded<=1'b0;
+busy<=1'b0;
+done<=1'b0;
+results_ready<=1'b0;
+rd_valid<=1'b0;
+fault_latched<=1'b0;
+fault_code<=4'd0;
+end else begin
+done<=1'b0;
+rd_valid<=1'b0;
+if(fault_latched||fault_pending)begin
+state<=IDLE;
+busy<=1'b0;
+frame_loaded<=1'b0;
+results_ready<=1'b0;
+if(!fault_latched)begin
+fault_latched<=1'b1;
+fault_code<=pending_fault_code;
+end
+end else begin
+case(state)
+IDLE:begin
+rd_valid<=result_read_accept;
+if(start)begin
+busy<=1'b1;
+frame_loaded<=1'b0;
+results_ready<=1'b0;
+load_index<='0;
+stage_index<='0;
+group_base<='0;
+pair_index<='0;
+state<=READ_A;
+end else if(input_accept)begin
+results_ready<=1'b0;
+if(load_index==8'd255)begin
+frame_loaded<=1'b1;
+end else begin
+load_index<=load_index+1'b1;
+end
+end
+end
+READ_A:begin
+state<=READ_B;
+end
+READ_B:begin
+operand_a_re<=$signed(memory_q[35:18]);
+operand_a_im<=$signed(memory_q[17:0]);
+state<=BF_START;
+end
+BF_START:begin
+state<=BF_WAIT;
+end
+BF_WAIT:begin
+if(butterfly_done)
+state<=WRITE_A;
+end
+WRITE_A:begin
+state<=WRITE_B;
+end
+WRITE_B:begin
+if({2'b00,pair_index}==half_span-9'd1)begin
+pair_index<='0;
+if(group_end==9'd256)begin
+group_base<='0;
+if(stage_index==3'd7)begin
+busy<=1'b0;
+done<=1'b1;
+results_ready<=1'b1;
+state<=IDLE;
+end else begin
+stage_index<=stage_index+1'b1;
+state<=READ_A;
+end
+end else begin
+group_base<=group_end[7:0];
+state<=READ_A;
+end
+end else begin
+pair_index<=pair_index+1'b1;
+state<=READ_A;
+end
+end
+default:begin end
+endcase
+end
+end
+end
+endmodule
+`timescale 1ns/1ps
+module fft_magnitude(
+input logic clk,
+input logic rst_n,
+input logic start,
+input logic signed[17:0]in_re,
+input logic signed[17:0]in_im,
+output logic busy,
+output logic done,
+output logic[17:0]magnitude
+);
+typedef enum logic[1:0]{IDLE,SQUARE,INITIALIZE,ROOT_ITERATION}state_t;
+state_t state;
+logic signed[17:0]re_reg,im_reg;
+logic signed[35:0]square_re,square_im;
+wire[36:0]square_sum={1'b0,$unsigned(square_re)}+
+{1'b0,$unsigned(square_im)};
+logic[35:0]radicand_shift;
+logic[37:0]remainder;
+logic[17:0]partial_root;
+logic[4:0]iteration;
+wire[37:0]expanded_remainder=
+(remainder<<2)|{36'd0,radicand_shift[35:34]};
+wire[37:0]trial_divisor=({20'd0,partial_root}<<2)|38'd1;
+wire take_bit=expanded_remainder>=trial_divisor;
+wire[37:0]next_remainder=take_bit
+?expanded_remainder-trial_divisor:expanded_remainder;
+wire[17:0]next_root={partial_root[16:0],take_bit};
+always_ff@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+state<=IDLE;
+re_reg<='0;
+im_reg<='0;
+square_re<='0;
+square_im<='0;
+radicand_shift<='0;
+remainder<='0;
+partial_root<='0;
+iteration<='0;
+busy<=1'b0;
+done<=1'b0;
+magnitude<='0;
+end else begin
+done<=1'b0;
+case(state)
+IDLE:begin
+if(start)begin
+re_reg<=in_re;
+im_reg<=in_im;
+busy<=1'b1;
+state<=SQUARE;
+end
+end
+SQUARE:begin
+square_re<=re_reg*re_reg;
+square_im<=im_reg*im_reg;
+state<=INITIALIZE;
+end
+INITIALIZE:begin
+radicand_shift<=square_sum[35:0];
+remainder<='0;
+partial_root<='0;
+iteration<='0;
+state<=ROOT_ITERATION;
+end
+ROOT_ITERATION:begin
+radicand_shift<={radicand_shift[33:0],2'b00};
+remainder<=next_remainder;
+partial_root<=next_root;
+if(iteration==5'd17)begin
+magnitude<=next_root;
+busy<=1'b0;
+done<=1'b1;
+state<=IDLE;
+end else begin
+iteration<=iteration+1'b1;
+end
+end
+endcase
+end
+end
+endmodule
+`timescale 1ns/1ps
+module signal_processor(
+input wire clk,
+input wire rst_n,
+input wire sample_valid,
+input wire signed[15:0]sample_signed,
+output wire frame_begin,
+output reg[31:0]frame_seq,
+output wire wave_valid,
+output reg[7:0]wave_index,
+output reg signed[15:0]wave_sample,
+output wire spectrum_valid,
+output reg[7:0]spectrum_index,
+output reg[17:0]spectrum_mag,
+output wire frame_done,
+output wire busy,
+output reg fault_latched,
+output reg[3:0]fault_code
+);
+typedef enum logic[3:0]{
+WAIT_BLOCK,CAPTURE_REQ,CAPTURE_WAIT,SEND_INPUT,START_FFT,
+WAIT_FFT,BIN_REQ,BIN_WAIT,START_MAG,WAIT_MAG,FAILED
+}state_t;
+state_t state;
+reg saved_bank;
+reg[7:0]copy_index;
+reg signed[15:0]sample_hold;
+reg[7:0]bin_index;
+reg signed[17:0]bin_re_hold,bin_im_hold;
+reg frame_begin_q,wave_valid_q,spectrum_valid_q,frame_done_q,busy_q;
+wire capture_valid,capture_bank,capture_overrun;
+wire[31:0]capture_seq;
+wire capture_rd_valid;
+wire signed[15:0]capture_rd_sample;
+wire fft_in_ready,fft_frame_loaded,fft_busy,fft_done;
+wire fft_results_ready,fft_rd_valid,fft_fault;
+wire signed[17:0]fft_rd_re,fft_rd_im;
+wire[3:0]fft_fault_code;
+wire magnitude_busy,magnitude_done;
+wire[17:0]magnitude_value;
+wire abort_now=fault_latched||capture_overrun||fft_fault;
+wire capture_rd_en=(state==CAPTURE_REQ)&&!abort_now;
+wire fft_in_valid=(state==SEND_INPUT)&&!abort_now;
+wire fft_start=(state==START_FFT)&&!abort_now;
+wire capture_release=fft_start;
+wire fft_rd_en=(state==BIN_REQ)&&!abort_now;
+wire magnitude_start=(state==START_MAG)&&!abort_now;
+assign frame_begin=frame_begin_q&&!abort_now;
+assign wave_valid=wave_valid_q&&!abort_now;
+assign spectrum_valid=spectrum_valid_q&&!abort_now;
+assign frame_done=frame_done_q&&!abort_now;
+assign busy=busy_q&&!abort_now;
+sample_capture capture(
+.clk(clk),.rst_n(rst_n),
+.sample_valid(sample_valid),.sample_signed(sample_signed),
+.block_valid(capture_valid),.block_bank(capture_bank),
+.block_seq(capture_seq),.block_release(capture_release),
+.overrun_latched(capture_overrun),
+.rd_en(capture_rd_en),.rd_bank(saved_bank),.rd_addr(copy_index),
+.rd_sample(capture_rd_sample),.rd_valid(capture_rd_valid)
+);
+fft256_core fft(
+.clk(clk),.rst_n(rst_n),
+.in_valid(fft_in_valid),.in_sample(sample_hold),.in_ready(fft_in_ready),
+.start(fft_start),.frame_loaded(fft_frame_loaded),
+.busy(fft_busy),.done(fft_done),.results_ready(fft_results_ready),
+.rd_en(fft_rd_en),.rd_addr(bin_index),
+.rd_re(fft_rd_re),.rd_im(fft_rd_im),.rd_valid(fft_rd_valid),
+.fault_latched(fft_fault),.fault_code(fft_fault_code)
+);
+fft_magnitude magnitude_unit(
+.clk(clk),.rst_n(rst_n),.start(magnitude_start),
+.in_re(bin_re_hold),.in_im(bin_im_hold),
+.busy(magnitude_busy),.done(magnitude_done),.magnitude(magnitude_value)
+);
+always@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+state<=WAIT_BLOCK;
+saved_bank<=1'b0;
+copy_index<=8'd0;
+sample_hold<=16'sd0;
+bin_index<=8'd0;
+bin_re_hold<=18'sd0;
+bin_im_hold<=18'sd0;
+frame_begin_q<=1'b0;
+wave_valid_q<=1'b0;
+spectrum_valid_q<=1'b0;
+frame_done_q<=1'b0;
+busy_q<=1'b0;
+frame_seq<=32'd0;
+wave_index<=8'd0;
+wave_sample<=16'sd0;
+spectrum_index<=8'd0;
+spectrum_mag<=18'd0;
+fault_latched<=1'b0;
+fault_code<=4'd0;
+end else begin
+frame_begin_q<=1'b0;
+wave_valid_q<=1'b0;
+spectrum_valid_q<=1'b0;
+frame_done_q<=1'b0;
+if(fault_latched)begin
+busy_q<=1'b0;
+state<=FAILED;
+end else if(capture_overrun||fft_fault)begin
+fault_latched<=1'b1;
+fault_code<=capture_overrun?4'd1:4'd2;
+busy_q<=1'b0;
+state<=FAILED;
+end else begin
+case(state)
+WAIT_BLOCK:begin
+busy_q<=1'b0;
+if(capture_valid)begin
+saved_bank<=capture_bank;
+frame_seq<=capture_seq;
+copy_index<=8'd0;
+frame_begin_q<=1'b1;
+busy_q<=1'b1;
+state<=CAPTURE_REQ;
+end
+end
+CAPTURE_REQ:begin
+state<=CAPTURE_WAIT;
+end
+CAPTURE_WAIT:begin
+if(capture_rd_valid)begin
+sample_hold<=capture_rd_sample;
+state<=SEND_INPUT;
+end
+end
+SEND_INPUT:begin
+if(fft_in_ready)begin
+wave_valid_q<=1'b1;
+wave_index<=copy_index;
+wave_sample<=sample_hold;
+if(copy_index==8'd255)begin
+state<=START_FFT;
+end else begin
+copy_index<=copy_index+8'd1;
+state<=CAPTURE_REQ;
+end
+end
+end
+START_FFT:begin
+state<=WAIT_FFT;
+end
+WAIT_FFT:begin
+if(fft_done)begin
+bin_index<=8'd0;
+state<=BIN_REQ;
+end
+end
+BIN_REQ:begin
+state<=BIN_WAIT;
+end
+BIN_WAIT:begin
+if(fft_rd_valid)begin
+bin_re_hold<=fft_rd_re;
+bin_im_hold<=fft_rd_im;
+state<=START_MAG;
+end
+end
+START_MAG:begin
+state<=WAIT_MAG;
+end
+WAIT_MAG:begin
+if(magnitude_done)begin
+spectrum_valid_q<=1'b1;
+spectrum_index<=bin_index;
+spectrum_mag<=magnitude_value;
+if(bin_index==8'd128)begin
+frame_done_q<=1'b1;
+busy_q<=1'b0;
+state<=WAIT_BLOCK;
+end else begin
+bin_index<=bin_index+8'd1;
+state<=BIN_REQ;
+end
+end
+end
+FAILED:begin
+busy_q<=1'b0;
+end
+default:begin
+busy_q<=1'b0;
+state<=WAIT_BLOCK;
+end
+endcase
+end
+end
+end
+endmodule
+`timescale 1ns/1ps
+module display_buffer(
+input wire wr_clk,
+input wire wr_rst_n,
+input wire pix_clk,
+input wire pix_rst_n,
+input wire frame_start,
+input wire frame_begin,
+input wire[31:0]frame_seq,
+input wire wave_valid,
+input wire[7:0]wave_index,
+input wire signed[15:0]wave_sample,
+input wire spectrum_valid,
+input wire[7:0]spectrum_index,
+input wire[17:0]spectrum_mag,
+input wire frame_done,
+output wire wr_busy,
+output reg wr_fault_latched,
+output reg front_valid,
+output reg[31:0]front_seq,
+input wire rd_en,
+input wire[7:0]rd_wave_addr,
+input wire[7:0]rd_spectrum_addr,
+output reg rd_valid,
+output wire signed[15:0]rd_wave_prev,
+output wire signed[15:0]rd_wave_sample,
+output wire[17:0]rd_spectrum_mag
+);
+reg active;
+reg waiting_ack;
+reg back_bank;
+reg[31:0]working_seq;
+reg[8:0]wave_count;
+reg[7:0]spectrum_count;
+reg signed[15:0]previous_sample;
+reg request_toggle;
+reg published_bank;
+reg[31:0]published_seq;
+reg ack_toggle;
+reg ack_meta,ack_sync;
+reg request_meta,request_sync;
+reg front_bank;
+wire accept_begin=frame_begin&&!active&&!waiting_ack&&!wr_fault_latched;
+wire accepted_frame=active||accept_begin;
+reg[8:0]next_wave_count;
+reg[7:0]next_spectrum_count;
+reg malformed_frame;
+reg commit_frame;
+reg wave_write;
+reg spectrum_write;
+reg[31:0]wave_write_data;
+assign wr_busy=active||waiting_ack||wr_fault_latched;
+always_comb begin
+next_wave_count=accept_begin?9'd0:wave_count;
+next_spectrum_count=accept_begin?8'd0:spectrum_count;
+malformed_frame=1'b0;
+commit_frame=1'b0;
+wave_write=1'b0;
+spectrum_write=1'b0;
+wave_write_data='0;
+if(wr_rst_n&&!wr_fault_latched&&!waiting_ack)begin
+if(active&&frame_begin)begin
+malformed_frame=1'b1;
+end else if(accepted_frame)begin
+if(wave_valid)begin
+if((next_wave_count>=9'd256)||
+(wave_index!=next_wave_count[7:0]))begin
+malformed_frame=1'b1;
+end else begin
+wave_write=1'b1;
+wave_write_data={
+(next_wave_count==9'd0)?wave_sample:previous_sample,
+wave_sample
+};
+next_wave_count=next_wave_count+9'd1;
+end
+end
+if(spectrum_valid)begin
+if((next_wave_count!=9'd256)||
+(next_spectrum_count>=8'd129)||
+(spectrum_index!=next_spectrum_count))begin
+malformed_frame=1'b1;
+end else begin
+spectrum_write=1'b1;
+next_spectrum_count=next_spectrum_count+8'd1;
+end
+end
+if(frame_done)begin
+if((next_wave_count!=9'd256)||
+(next_spectrum_count!=8'd129))
+malformed_frame=1'b1;
+else
+commit_frame=1'b1;
+end
+end
+end
+if(malformed_frame)begin
+wave_write=1'b0;
+spectrum_write=1'b0;
+commit_frame=1'b0;
+end
+end
+always@(posedge wr_clk or negedge wr_rst_n)begin
+if(!wr_rst_n)begin
+ack_meta<=1'b0;
+ack_sync<=1'b0;
+end else begin
+ack_meta<=ack_toggle;
+ack_sync<=ack_meta;
+end
+end
+always@(posedge wr_clk or negedge wr_rst_n)begin
+if(!wr_rst_n)begin
+active<=1'b0;
+waiting_ack<=1'b0;
+back_bank<=1'b1;
+working_seq<=32'd0;
+wave_count<=9'd0;
+spectrum_count<=8'd0;
+previous_sample<=16'sd0;
+request_toggle<=1'b0;
+published_bank<=1'b1;
+published_seq<=32'd0;
+wr_fault_latched<=1'b0;
+end else begin
+if(waiting_ack&&(ack_sync==request_toggle))begin
+waiting_ack<=1'b0;
+back_bank<=~published_bank;
+end
+if(!wr_fault_latched&&!waiting_ack)begin
+if(malformed_frame)begin
+active<=1'b0;
+wr_fault_latched<=1'b1;
+end else if(accepted_frame)begin
+if(accept_begin)
+working_seq<=frame_seq;
+active<=!commit_frame;
+wave_count<=next_wave_count;
+spectrum_count<=next_spectrum_count;
+if(wave_write)
+previous_sample<=wave_sample;
+if(commit_frame)begin
+published_bank<=back_bank;
+published_seq<=accept_begin?frame_seq:working_seq;
+request_toggle<=~request_toggle;
+waiting_ack<=1'b1;
+end
+end
+end
+end
+end
+always@(posedge pix_clk or negedge pix_rst_n)begin
+if(!pix_rst_n)begin
+request_meta<=1'b0;
+request_sync<=1'b0;
+end else begin
+request_meta<=request_toggle;
+request_sync<=request_meta;
+end
+end
+always@(posedge pix_clk or negedge pix_rst_n)begin
+if(!pix_rst_n)begin
+front_bank<=1'b0;
+front_valid<=1'b0;
+front_seq<=32'd0;
+ack_toggle<=1'b0;
+end else if(frame_start&&(request_sync!=ack_toggle))begin
+front_bank<=published_bank;
+front_seq<=published_seq;
+front_valid<=1'b1;
+ack_toggle<=request_sync;
+end
+end
+reg[31:0]wave_bank0[0:255];
+reg[31:0]wave_bank1[0:255];
+reg[17:0]spectrum_bank0[0:255];
+reg[17:0]spectrum_bank1[0:255];
+reg[31:0]wave_q0,wave_q1;
+reg[17:0]spectrum_q0,spectrum_q1;
+wire read_accept=pix_rst_n&&rd_en&&front_valid;
+wire spectrum_in_range=rd_spectrum_addr<=8'd128;
+wire[7:0]spectrum_read_addr=spectrum_in_range?rd_spectrum_addr:8'd0;
+reg read_bank_q;
+reg spectrum_in_range_q;
+always@(posedge wr_clk)begin
+if(wave_write&&!back_bank)
+wave_bank0[wave_index]<=wave_write_data;
+if(spectrum_write&&!back_bank)
+spectrum_bank0[spectrum_index]<=spectrum_mag;
+end
+always@(posedge wr_clk)begin
+if(wave_write&&back_bank)
+wave_bank1[wave_index]<=wave_write_data;
+if(spectrum_write&&back_bank)
+spectrum_bank1[spectrum_index]<=spectrum_mag;
+end
+always@(posedge pix_clk)begin
+if(read_accept&&!front_bank)begin
+wave_q0<=wave_bank0[rd_wave_addr];
+spectrum_q0<=spectrum_bank0[spectrum_read_addr];
+end
+end
+always@(posedge pix_clk)begin
+if(read_accept&&front_bank)begin
+wave_q1<=wave_bank1[rd_wave_addr];
+spectrum_q1<=spectrum_bank1[spectrum_read_addr];
+end
+end
+always@(posedge pix_clk or negedge pix_rst_n)begin
+if(!pix_rst_n)begin
+rd_valid<=1'b0;
+read_bank_q<=1'b0;
+spectrum_in_range_q<=1'b0;
+end else begin
+rd_valid<=read_accept;
+if(read_accept)begin
+read_bank_q<=front_bank;
+spectrum_in_range_q<=spectrum_in_range;
+end
+end
+end
+wire[31:0]selected_wave=read_bank_q?wave_q1:wave_q0;
+assign rd_wave_prev=$signed(selected_wave[31:16]);
+assign rd_wave_sample=$signed(selected_wave[15:0]);
+assign rd_spectrum_mag=!spectrum_in_range_q?18'd0:
+(read_bank_q?spectrum_q1:spectrum_q0);
+endmodule
+`timescale 1ns/1ps
+module video_timing_720p(
+input wire clk,
+input wire rst_n,
+output reg[10:0]x,
+output reg[9:0]y,
+output wire de,
+output wire hsync,
+output wire vsync,
+output wire frame_start
+);
+assign de=rst_n&&(x<11'd1280)&&(y<10'd720);
+assign hsync=rst_n&&(x>=11'd1390)&&(x<11'd1430);
+assign vsync=rst_n&&(y>=10'd725)&&(y<10'd730);
+assign frame_start=rst_n&&(x==11'd0)&&(y==10'd0);
+always@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+x<=11'd0;
+y<=10'd0;
+end else if(x==11'd1649)begin
+x<=11'd0;
+if(y==10'd749)
+y<=10'd0;
+else
+y<=y+10'd1;
+end else begin
+x<=x+11'd1;
+end
+end
+endmodule
+`timescale 1ns/1ps
+module plot_renderer(
+input wire clk,
+input wire rst_n,
+input wire[10:0]x,
+input wire[9:0]y,
+input wire de,
+input wire hsync,
+input wire vsync,
+input wire mode_fft,
+input wire front_valid,
+output wire rd_en,
+output reg[7:0]rd_wave_addr,
+output reg[7:0]rd_spectrum_addr,
+input wire rd_valid,
+input wire signed[15:0]wave_prev,
+input wire signed[15:0]wave_sample,
+input wire[17:0]spectrum_mag,
+output reg[7:0]rgb_r,
+output reg[7:0]rgb_g,
+output reg[7:0]rgb_b,
+output reg de_out,
+output reg hsync_out,
+output reg vsync_out
+);
+localparam[23:0]COLOR_BLACK=24'h000000;
+localparam[23:0]COLOR_GRID=24'h202020;
+localparam[23:0]COLOR_AXIS=24'h606060;
+localparam[23:0]COLOR_BORDER=24'h808080;
+localparam[23:0]COLOR_WAVE=24'h00ff40;
+localparam[23:0]COLOR_FFT=24'h00d8ff;
+reg[10:0]x_q;
+reg[9:0]y_q;
+reg de_q,hsync_q,vsync_q,mode_q,front_q;
+reg[23:0]pixel_color;
+reg plot_x,plot_y,grid_pixel,axis_pixel,border_pixel,data_pixel;
+reg[9:0]current_y,previous_y;
+reg[9:0]bar_height;
+wire[10:0]x_offset=x-11'd128;
+assign rd_en=rst_n&&de&&front_valid;
+always@*begin
+if(x<11'd128)
+rd_wave_addr=8'd0;
+else if(x>11'd1151)
+rd_wave_addr=8'd255;
+else
+rd_wave_addr=x_offset[9:2];
+if(x<11'd128)
+rd_spectrum_addr=8'd0;
+else if(x>11'd1159)
+rd_spectrum_addr=8'd128;
+else
+rd_spectrum_addr=x_offset[10:3];
+end
+function automatic[9:0]sample_to_y(input signed[15:0]sample_value);
+integer signed sample_integer;
+integer signed screen_y;
+begin
+sample_integer=$signed(sample_value);
+screen_y=384-(sample_integer>>>7);
+if(screen_y<128)
+sample_to_y=10'd128;
+else if(screen_y>639)
+sample_to_y=10'd639;
+else
+sample_to_y=screen_y[9:0];
+end
+endfunction
+always@*begin
+plot_x=(x_q>=11'd128)&&
+(mode_q?(x_q<=11'd1159):(x_q<=11'd1151));
+plot_y=(y_q>=10'd128)&&(y_q<=10'd639);
+grid_pixel=plot_x&&plot_y&&
+((x_q[6:0]==7'd0)||(y_q[6:0]==7'd0));
+axis_pixel=plot_x&&plot_y&&
+((x_q==11'd128)||
+(mode_q?(y_q==10'd639):(y_q==10'd384)));
+border_pixel=
+(((x_q==11'd127)||
+(mode_q?(x_q==11'd1160):(x_q==11'd1152)))&&
+(y_q>=10'd127)&&(y_q<=10'd640))||
+(((y_q==10'd127)||(y_q==10'd640))&&
+(x_q>=11'd127)&&
+(mode_q?(x_q<=11'd1160):(x_q<=11'd1152)));
+current_y=sample_to_y(wave_sample);
+previous_y=sample_to_y(wave_prev);
+if(spectrum_mag>=18'd32768)
+bar_height=10'd511;
+else
+bar_height={1'b0,spectrum_mag[14:6]};
+data_pixel=1'b0;
+if(front_q&&rd_valid&&plot_x&&plot_y)begin
+if(mode_q)begin
+data_pixel=(bar_height!=10'd0)&&
+(y_q>=(10'd640-bar_height));
+end else if(x_q[1:0]!=2'b00)begin
+data_pixel=(y_q==current_y);
+end else begin
+data_pixel=((y_q>=previous_y)&&(y_q<=current_y))||
+((y_q>=current_y)&&(y_q<=previous_y));
+end
+end
+pixel_color=COLOR_BLACK;
+if(de_q)begin
+if(data_pixel)
+pixel_color=mode_q?COLOR_FFT:COLOR_WAVE;
+else if(axis_pixel)
+pixel_color=COLOR_AXIS;
+else if(border_pixel)
+pixel_color=COLOR_BORDER;
+else if(grid_pixel)
+pixel_color=COLOR_GRID;
+end
+end
+always@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+x_q<=11'd0;
+y_q<=10'd0;
+de_q<=1'b0;
+hsync_q<=1'b0;
+vsync_q<=1'b0;
+mode_q<=1'b0;
+front_q<=1'b0;
+rgb_r<=8'd0;
+rgb_g<=8'd0;
+rgb_b<=8'd0;
+de_out<=1'b0;
+hsync_out<=1'b0;
+vsync_out<=1'b0;
+end else begin
+x_q<=x;
+y_q<=y;
+de_q<=de;
+hsync_q<=hsync;
+vsync_q<=vsync;
+mode_q<=mode_fft;
+front_q<=front_valid;
+{rgb_r,rgb_g,rgb_b}<=pixel_color;
+de_out<=de_q;
+hsync_out<=hsync_q;
+vsync_out<=vsync_q;
+end
+end
+endmodule
+`timescale 1ns/1ps
+module tmds_encoder(
+input logic clk,
+input logic rst_n,
+input logic de,
+input logic[7:0]data,
+input logic c0,
+input logic c1,
+output logic[9:0]symbol
+);
+localparam logic[9:0]CONTROL_00=10'b1101010100;
+logic signed[5:0]disparity,disparity_next;
+logic[9:0]symbol_next;
+logic[8:0]q_m;
+logic[3:0]ones_data,ones_q;
+logic use_xnor;
+logic signed[5:0]payload_balance;
+integer bit_index;
+always_comb begin
+ones_data=4'd0;
+for(bit_index=0;bit_index<8;bit_index=bit_index+1)
+ones_data=ones_data+{3'b000,data[bit_index]};
+use_xnor=(ones_data>4)||((ones_data==4)&&!data[0]);
+q_m='0;
+q_m[0]=data[0];
+q_m[8]=!use_xnor;
+for(bit_index=1;bit_index<8;bit_index=bit_index+1)begin
+if(use_xnor)
+q_m[bit_index]=~(q_m[bit_index-1]^data[bit_index]);
+else
+q_m[bit_index]=q_m[bit_index-1]^data[bit_index];
+end
+ones_q=4'd0;
+for(bit_index=0;bit_index<8;bit_index=bit_index+1)
+ones_q=ones_q+{3'b000,q_m[bit_index]};
+payload_balance=$signed({1'b0,ones_q,1'b0})-6'sd8;
+symbol_next=CONTROL_00;
+disparity_next=6'sd0;
+if(!de)begin
+case({c1,c0})
+2'b00:symbol_next=10'b1101010100;
+2'b01:symbol_next=10'b0010101011;
+2'b10:symbol_next=10'b0101010100;
+2'b11:symbol_next=10'b1010101011;
+default:symbol_next=CONTROL_00;
+endcase
+end else if((disparity==0)||(payload_balance==0))begin
+symbol_next={~q_m[8],q_m[8],q_m[8]?q_m[7:0]:~q_m[7:0]};
+if(q_m[8])
+disparity_next=disparity+payload_balance;
+else
+disparity_next=disparity-payload_balance;
+end else if(((disparity>0)&&(payload_balance>0))||
+((disparity<0)&&(payload_balance<0)))begin
+symbol_next={1'b1,q_m[8],~q_m[7:0]};
+disparity_next=disparity-payload_balance;
+if(q_m[8])disparity_next=disparity_next+6'sd2;
+end else begin
+symbol_next={1'b0,q_m[8],q_m[7:0]};
+disparity_next=disparity+payload_balance;
+if(!q_m[8])disparity_next=disparity_next-6'sd2;
+end
+end
+always_ff@(posedge clk or negedge rst_n)begin
+if(!rst_n)begin
+symbol<=CONTROL_00;
+disparity<=6'sd0;
+end else begin
+symbol<=symbol_next;
+disparity<=disparity_next;
+end
+end
+endmodule
+`timescale 1ns/1ps
+module diagnostic_overlay(
+input wire wr_clk27,
+input wire wr_rst_n,
+input wire pix_clk,
+input wire pix_rst_n,
+input wire pixel_frame_start,
+input wire[10:0]pixel_x,
+input wire[9:0]pixel_y,
+input wire video_de,
+input wire[23:0]in_rgb,
+input wire adc_fault,
+input wire[3:0]adc_code,
+input wire processor_fault,
+input wire[3:0]processor_code,
+input wire display_fault,
+output wire[23:0]out_rgb
+);
+(*syn_preserve=1*)reg[3:0]code_hold;
+(*syn_preserve=1*)reg first_valid;
+(*syn_preserve=1*)reg valid_meta;
+(*syn_preserve=1*)reg valid_sync;
+(*syn_preserve=1*)reg[3:0]code_pix;
+reg pixel_code_captured;
+reg[10:0]pixel_x_d1,pixel_x_d2;
+reg[9:0]pixel_y_d1,pixel_y_d2;
+always@(posedge wr_clk27 or negedge wr_rst_n)begin
+if(!wr_rst_n)begin
+code_hold<=4'd0;
+first_valid<=1'b0;
+end else if(!first_valid)begin
+if(adc_fault)begin
+code_hold<=adc_code;
+first_valid<=1'b1;
+end else if(processor_fault)begin
+code_hold<=(processor_code==4'd1)?4'd6:4'd7;
+first_valid<=1'b1;
+end else if(display_fault)begin
+code_hold<=4'd8;
+first_valid<=1'b1;
+end
+end
+end
+always@(posedge pix_clk or negedge pix_rst_n)begin
+if(!pix_rst_n)begin
+valid_meta<=1'b0;
+valid_sync<=1'b0;
+end else begin
+valid_meta<=first_valid;
+valid_sync<=valid_meta;
+end
+end
+always@(posedge pix_clk or negedge pix_rst_n)begin
+if(!pix_rst_n)begin
+code_pix<=4'd0;
+pixel_code_captured<=1'b0;
+pixel_x_d1<=11'd0;
+pixel_x_d2<=11'd0;
+pixel_y_d1<=10'd0;
+pixel_y_d2<=10'd0;
+end else begin
+pixel_x_d1<=pixel_x;
+pixel_x_d2<=pixel_x_d1;
+pixel_y_d1<=pixel_y;
+pixel_y_d2<=pixel_y_d1;
+if(pixel_frame_start&&valid_sync&&!pixel_code_captured)begin
+code_pix<=code_hold;
+pixel_code_captured<=1'b1;
+end
+end
+end
+wire row_match=(pixel_y_d2>=10'd48)&&(pixel_y_d2<=10'd79);
+wire[7:0]box_match;
+wire[7:0]red_match;
+genvar box_index;
+generate
+for(box_index=0;box_index<8;box_index=box_index+1)begin:boxes
+localparam[10:0]LEFT=128+80*box_index;
+localparam[10:0]RIGHT=191+80*box_index;
+localparam[3:0]NUMBER=box_index+1;
+assign box_match[box_index]=row_match&&
+(pixel_x_d2>=LEFT)&&(pixel_x_d2<=RIGHT);
+assign red_match[box_index]=box_match[box_index]&&(code_pix>=NUMBER);
+end
+endgenerate
+assign out_rgb=!video_de?24'h000000:
+(|box_match?(|red_match?24'hff0000:24'h202020):in_rgb);
+endmodule
+module presentation_font(
+input wire[7:0]character,
+input wire[2:0]row,
+output reg[4:0]pixels
+);
+reg[34:0]glyph;
+always@*begin
+case(character)
+8'h28:glyph=35'b00010_00100_01000_01000_01000_00100_00010;
+8'h29:glyph=35'b01000_00100_00010_00010_00010_00100_01000;
+8'h2C:glyph=35'b00000_00000_00000_00000_00000_00110_00100;
+8'h2D:glyph=35'b00000_00000_00000_11111_00000_00000_00000;
+8'h2E:glyph=35'b00000_00000_00000_00000_00000_00000_00110;
+8'h2F:glyph=35'b00001_00001_00010_00100_01000_10000_10000;
+8'h30:glyph=35'b01110_10001_10011_10101_11001_10001_01110;
+8'h31:glyph=35'b00100_01100_00100_00100_00100_00100_01110;
+8'h32:glyph=35'b01110_10001_00001_00010_00100_01000_11111;
+8'h33:glyph=35'b11111_00010_00100_00010_00001_10001_01110;
+8'h34:glyph=35'b00010_00110_01010_10010_11111_00010_00010;
+8'h35:glyph=35'b11111_10000_11110_00001_00001_10001_01110;
+8'h36:glyph=35'b00110_01000_10000_11110_10001_10001_01110;
+8'h37:glyph=35'b11111_00001_00010_00100_01000_01000_01000;
+8'h38:glyph=35'b01110_10001_10001_01110_10001_10001_01110;
+8'h39:glyph=35'b01110_10001_10001_01111_00001_00010_01100;
+8'h3A:glyph=35'b00000_00110_00110_00000_00110_00110_00000;
+8'h3D:glyph=35'b00000_00000_11111_00000_11111_00000_00000;
+8'h41:glyph=35'b01110_10001_10001_11111_10001_10001_10001;
+8'h42:glyph=35'b11110_10001_10001_11110_10001_10001_11110;
+8'h43:glyph=35'b01110_10001_10000_10000_10000_10001_01110;
+8'h44:glyph=35'b11110_10001_10001_10001_10001_10001_11110;
+8'h45:glyph=35'b11111_10000_10000_11110_10000_10000_11111;
+8'h46:glyph=35'b11111_10000_10000_11110_10000_10000_10000;
+8'h47:glyph=35'b01110_10001_10000_10111_10001_10001_01111;
+8'h48:glyph=35'b10001_10001_10001_11111_10001_10001_10001;
+8'h49:glyph=35'b01110_00100_00100_00100_00100_00100_01110;
+8'h4A:glyph=35'b00111_00010_00010_00010_00010_10010_01100;
+8'h4B:glyph=35'b10001_10010_10100_11000_10100_10010_10001;
+8'h4C:glyph=35'b10000_10000_10000_10000_10000_10000_11111;
+8'h4D:glyph=35'b10001_11011_10101_10101_10001_10001_10001;
+8'h4E:glyph=35'b10001_10001_11001_10101_10011_10001_10001;
+8'h4F:glyph=35'b01110_10001_10001_10001_10001_10001_01110;
+8'h50:glyph=35'b11110_10001_10001_11110_10000_10000_10000;
+8'h51:glyph=35'b01110_10001_10001_10001_10101_10010_01101;
+8'h52:glyph=35'b11110_10001_10001_11110_10100_10010_10001;
+8'h53:glyph=35'b01111_10000_10000_01110_00001_00001_11110;
+8'h54:glyph=35'b11111_00100_00100_00100_00100_00100_00100;
+8'h55:glyph=35'b10001_10001_10001_10001_10001_10001_01110;
+8'h56:glyph=35'b10001_10001_10001_10001_10001_01010_00100;
+8'h57:glyph=35'b10001_10001_10001_10101_10101_10101_01010;
+8'h58:glyph=35'b10001_10001_01010_00100_01010_10001_10001;
+8'h59:glyph=35'b10001_10001_01010_00100_00100_00100_00100;
+8'h5A:glyph=35'b11111_00001_00010_00100_01000_10000_11111;
+8'h61:glyph=35'b00000_00000_01110_00001_01111_10001_01111;
+8'h62:glyph=35'b10000_10000_10110_11001_10001_10001_11110;
+8'h63:glyph=35'b00000_00000_01110_10000_10000_10001_01110;
+8'h64:glyph=35'b00001_00001_01101_10011_10001_10001_01111;
+8'h65:glyph=35'b00000_00000_01110_10001_11111_10000_01110;
+8'h66:glyph=35'b00110_01001_01000_11100_01000_01000_01000;
+8'h67:glyph=35'b00000_00000_01111_10001_01111_00001_01110;
+8'h68:glyph=35'b10000_10000_10110_11001_10001_10001_10001;
+8'h69:glyph=35'b00100_00000_01100_00100_00100_00100_01110;
+8'h6A:glyph=35'b00010_00000_00110_00010_00010_10010_01100;
+8'h6B:glyph=35'b10000_10000_10010_10100_11000_10100_10010;
+8'h6C:glyph=35'b01100_00100_00100_00100_00100_00100_01110;
+8'h6D:glyph=35'b00000_00000_11010_10101_10101_10101_10101;
+8'h6E:glyph=35'b00000_00000_10110_11001_10001_10001_10001;
+8'h6F:glyph=35'b00000_00000_01110_10001_10001_10001_01110;
+8'h70:glyph=35'b00000_00000_11110_10001_11110_10000_10000;
+8'h71:glyph=35'b00000_00000_01111_10001_01111_00001_00001;
+8'h72:glyph=35'b00000_00000_10110_11001_10000_10000_10000;
+8'h73:glyph=35'b00000_00000_01111_10000_01110_00001_11110;
+8'h74:glyph=35'b01000_01000_11100_01000_01000_01001_00110;
+8'h75:glyph=35'b00000_00000_10001_10001_10001_10011_01101;
+8'h76:glyph=35'b00000_00000_10001_10001_10001_01010_00100;
+8'h77:glyph=35'b00000_00000_10001_10001_10101_10101_01010;
+8'h78:glyph=35'b00000_00000_10001_01010_00100_01010_10001;
+8'h79:glyph=35'b00000_00000_10001_10001_01111_00001_01110;
+8'h7A:glyph=35'b00000_00000_11111_00010_00100_01000_11111;
+8'hE1:glyph=35'b00010_00100_01110_00001_01111_10001_01111;
+8'hF3:glyph=35'b00010_00100_01110_10001_10001_10001_01110;
+default:glyph=35'd0;
+endcase
+case(row)
+3'd0:pixels=glyph[34:30];
+3'd1:pixels=glyph[29:25];
+3'd2:pixels=glyph[24:20];
+3'd3:pixels=glyph[19:15];
+3'd4:pixels=glyph[14:10];
+3'd5:pixels=glyph[9:5];
+3'd6:pixels=glyph[4:0];
+default:pixels=5'd0;
+endcase
+end
+endmodule
+module presentation_logo(
+input wire clk,
+input wire[7:0]x,
+input wire[6:0]y,
+output wire[1:0]level
+);
+reg[7:0]byte_q;
+reg[1:0]column_q;
+always@(posedge clk)begin
+column_q<=x[1:0];
+case({y,x[7:2]})
+13'd21,13'd85,13'd149,13'd213,13'd277,13'd341,13'd468,13'd486,13'd532,13'd542,13'd862,13'd917,13'd935,13'd981,13'd1045,13'd1109,13'd1435,13'd1453,13'd1564,13'd1576,13'd1619,13'd1685,13'd1749,13'd1813,13'd1877,13'd1897,13'd1899,13'd1941,13'd2013,13'd2030,13'd2414,13'd2453,13'd2517,13'd2528,13'd2581,13'd2585,13'd2592,13'd2605,13'd2641,13'd2645,13'd2709,13'd2786,13'd3034,13'd3091,13'd3155,13'd3215,13'd3219,13'd3221,13'd3285,13'd3349,13'd3413,13'd3477,13'd3491,13'd3597,13'd3622,13'd3696,13'd3727,13'd3760,13'd3824,13'd3856,13'd3888,13'd3945,13'd3952,13'd4016,13'd4019,13'd4045,13'd4067,13'd4071,13'd4080,13'd4177,13'd4241,13'd4369,13'd7015,13'd7119:byte_q<=8'h02;
+13'd86,13'd150,13'd214,13'd278,13'd342,13'd406,13'd470,13'd534,13'd598,13'd662,13'd726,13'd790,13'd795,13'd854,13'd864,13'd872,13'd918,13'd982,13'd993,13'd1000,13'd1046,13'd1110,13'd1174,13'd1238,13'd1302,13'd1366,13'd1430,13'd1438,13'd1454,13'd1494,13'd1558,13'd1622,13'd1686,13'd1750,13'd1814,13'd1878,13'd1942,13'd2006,13'd2031,13'd2070,13'd2134,13'd2198,13'd2262,13'd2326,13'd2390,13'd2454,13'd2465,13'd2467,13'd2518,13'd2535,13'd2582,13'd2646,13'd2658,13'd2710,13'd2774,13'd2838,13'd2902,13'd2914,13'd2966,13'd3030,13'd3094,13'd3158,13'd3222,13'd3284,13'd3286,13'd3350,13'd3414,13'd3478,13'd3542,13'd3549,13'd3551,13'd3556,13'd3606,13'd3613,13'd3670,13'd3677,13'd3734,13'd3741,13'd3798,13'd3805,13'd3869,13'd3882,13'd3926,13'd3933,13'd3997,13'd4004,13'd4084,13'd4129,13'd4133,13'd4145,13'd4175,13'd4178,13'd4365,13'd6417,13'd6482,13'd6492,13'd6496,13'd6498,13'd6614,13'd6691,13'd6869,13'd6933,13'd6997,13'd6999,13'd7061,13'd7080,13'd7125,13'd7131:byte_q<=8'h40;
+13'd344,13'd920,13'd925,13'd1832,13'd1939,13'd2520,13'd3032,13'd3088,13'd3788,13'd4056,13'd6749,13'd7059,13'd7069:byte_q<=8'h1F;
+13'd345,13'd921,13'd1833,13'd2521,13'd2523,13'd2533,13'd2538,13'd2864,13'd3035,13'd3045,13'd3492,13'd3561,13'd3569,13'd3817,13'd4061,13'd4068,13'd4231,13'd4294,13'd6553,13'd6555,13'd6558,13'd6561,13'd6809,13'd6811,13'd6948:byte_q<=8'hFF;
+13'd346,13'd487,13'd922,13'd929,13'd2978,13'd3493,13'd3693,13'd3700,13'd4065,13'd6481,13'd6689,13'd6753,13'd6760,13'd6807,13'd6817,13'd6824,13'd6881,13'd6885,13'd6888,13'd6945,13'd7009:byte_q<=8'hE0;
+13'd404,13'd422,13'd538,13'd731,13'd794,13'd798,13'd858,13'd927,13'd989,13'd1437,13'd1503,13'd1512,13'd1555,13'd1884,13'd1961,13'd2008,13'd2194,13'd2350,13'd2464,13'd2478,13'd2669,13'd2850,13'd2960,13'd2983,13'd3053,13'd3106,13'd3406,13'd3547,13'd3558,13'd3611,13'd3625,13'd3668,13'd3675,13'd3724,13'd3732,13'd3739,13'd3796,13'd3803,13'd3851,13'd3860,13'd3867,13'd3876,13'd3931,13'd4113,13'd4122,13'd4124,13'd4140,13'd4141,13'd4144,13'd4292,13'd4356,13'd6483,13'd6484,13'd6490,13'd6686,13'd6695,13'd6751,13'd6942,13'd6951,13'd6992,13'd7006,13'd7121,13'd7135:byte_q<=8'h01;
+13'd405,13'd661,13'd725,13'd789,13'd853,13'd1173,13'd1301,13'd1365,13'd1621,13'd2005,13'd2069,13'd2389,13'd2522,13'd2656,13'd2773,13'd3157,13'd3541,13'd3564,13'd4174,13'd6741:byte_q<=8'h42;
+13'd408,13'd472,13'd536,13'd679,13'd728,13'd792,13'd856,13'd1044,13'd1560,13'd1569,13'd1816,13'd1889,13'd2595,13'd2791,13'd2861,13'd2968,13'd3619,13'd3691,13'd3939,13'd3994,13'd4299,13'd6551,13'd6621,13'd6684:byte_q<=8'h1D;
+13'd409,13'd483,13'd2459,13'd2469,13'd2474,13'd2725,13'd2928,13'd2981,13'd4125,13'd4300,13'd4303,13'd4306,13'd4548,13'd4549,13'd4550,13'd4551,13'd4552,13'd4553,13'd4554,13'd4555,13'd4556,13'd4557,13'd4558,13'd4559,13'd4560,13'd4561,13'd4562,13'd4563,13'd4564,13'd4565,13'd4566,13'd5443,13'd5444,13'd5445,13'd5446,13'd5447,13'd5448,13'd5449,13'd5450,13'd5451,13'd5452,13'd5453,13'd5454,13'd5455,13'd5456,13'd5457,13'd5458,13'd5459,13'd5460,13'd5461,13'd5462,13'd5463,13'd5464,13'd5465,13'd5466,13'd5467,13'd5468,13'd5469,13'd5470,13'd5471,13'd5472,13'd5473,13'd5474,13'd5475,13'd5476,13'd5477,13'd5478,13'd5479,13'd5480,13'd5481,13'd5482,13'd5483,13'd5484,13'd5485,13'd5486,13'd5487,13'd5488,13'd5489,13'd5490,13'd5491,13'd6489,13'd6491,13'd6497,13'd6617,13'd6745,13'd6873:byte_q<=8'h55;
+13'd410,13'd998,13'd1449,13'd2716,13'd2972,13'd3507,13'd4121,13'd4134,13'd6503,13'd6750:byte_q<=8'h50;
+13'd411,13'd418,13'd667,13'd2016,13'd6626:byte_q<=8'h6F;
+13'd412,13'd859,13'd1579,13'd1965,13'd2594,13'd2602,13'd2666,13'd2707,13'd2858,13'd2865,13'd2922,13'd3553,13'd3559,13'd3600,13'd3629,13'd3692,13'd3950,13'd4020,13'd6560,13'd6624,13'd6688,13'd6696,13'd6752,13'd6806,13'd6816,13'd6821,13'd6871,13'd6876,13'd6880,13'd6930,13'd6944,13'd6952,13'd6994,13'd7008,13'd7058,13'd7072:byte_q<=8'hD0;
+13'd413,13'd415,13'd1450,13'd2011,13'd3156,13'd3411,13'd3475,13'd3539,13'd3635,13'd3920,13'd3978,13'd4238,13'd4366,13'd7124,13'd7133:byte_q<=8'h06;
+13'd414,13'd675,13'd1838,13'd2539,13'd2797,13'd3051,13'd3789,13'd3813,13'd3852:byte_q<=8'hFD;
+13'd417,13'd1444,13'd1452,13'd3538,13'd3602,13'd3919,13'd3928,13'd4176,13'd6941:byte_q<=8'h24;
+13'd419,13'd3033,13'd3571,13'd6567,13'd6814,13'd7120,13'd7134:byte_q<=8'hFE;
+13'd420,13'd540,13'd2020,13'd3474,13'd4044,13'd4115,13'd4179:byte_q<=8'h18;
+13'd423,13'd602,13'd666,13'd668,13'd986,13'd988,13'd1441,13'd2015,13'd2017,13'd3562,13'd3616,13'd3818,13'd3858,13'd4107,13'd4368,13'd7122,13'd7136:byte_q<=8'h90;
+13'd469,13'd533,13'd597,13'd1237,13'd1429,13'd1493,13'd1557,13'd2133,13'd2197,13'd2261,13'd2325,13'd2593,13'd2799,13'd2837,13'd2901,13'd2962,13'd2965,13'd2970,13'd3029,13'd3093,13'd3605,13'd3669,13'd3733,13'd3797,13'd3861,13'd3925,13'd6883,13'd7130:byte_q<=8'h82;
+13'd475,13'd1504,13'd1952,13'd2706,13'd2730,13'd2986,13'd3916,13'd6625:byte_q<=8'hE5;
+13'd476,13'd1508,13'd3557,13'd4001,13'd6694,13'd6758,13'd6822,13'd6886,13'd6950,13'd7004,13'd7013:byte_q<=8'h78;
+13'd477,13'd600,13'd664,13'd742,13'd932,13'd980,13'd1499,13'd1947,13'd2912,13'd3346,13'd3409,13'd3634,13'd3878:byte_q<=8'h1E;
+13'd478,13'd1500,13'd1769,13'd1948,13'd3603,13'd3791,13'd3881,13'd4170,13'd6631:byte_q<=8'h5B;
+13'd479,13'd1834,13'd3999,13'd6810,13'd7060:byte_q<=8'h47;
+13'd481,13'd861,13'd1498,13'd1882,13'd2462,13'd2526,13'd2590,13'd2604,13'd2654,13'd2668,13'd2718,13'd2727,13'd2782,13'd2846,13'd2860,13'd2910,13'd2924,13'd2974,13'd2988,13'd3038,13'd3052,13'd3057,13'd3698,13'd3747,13'd3811,13'd3875,13'd3992,13'd6479,13'd6543,13'd6607,13'd6671,13'd6680,13'd6735,13'd6744,13'd6799,13'd6863,13'd6927,13'd6936,13'd7000:byte_q<=8'h38;
+13'd482,13'd738,13'd2834,13'd4108:byte_q<=8'h75;
+13'd484,13'd548,13'd612,13'd676,13'd740,13'd796,13'd804,13'd860,13'd868,13'd1748,13'd2584,13'd2648,13'd2712,13'd2776,13'd2840,13'd2904,13'd3481,13'd3545,13'd3609,13'd3673,13'd3694,13'd3737,13'd3801,13'd3865,13'd3929,13'd3937,13'd3949:byte_q<=8'h1C;
+13'd539,13'd936,13'd1518,13'd2580,13'd2587,13'd2599,13'd2651,13'd2801,13'd2843,13'd2907,13'd3633,13'd3636,13'd3697,13'd3761,13'd3825,13'd3889,13'd3946,13'd3953,13'd4011,13'd4014,13'd4017,13'd4081,13'd4301,13'd6742,13'd6757,13'd6935,13'd7016:byte_q<=8'hC0;
+13'd541,13'd545,13'd609,13'd673,13'd737,13'd801,13'd870,13'd1516,13'd1563,13'd1580,13'd1644,13'd1708,13'd1710,13'd1772,13'd1812,13'd1960,13'd2536,13'd2600,13'd2664,13'd2728,13'd2783,13'd2792,13'd2847,13'd2856,13'd2911,13'd2975,13'd3039,13'd3819,13'd3821,13'd3822,13'd3954,13'd4006:byte_q<=8'h34;
+13'd543,13'd799,13'd1898,13'd2657,13'd2721,13'd2849,13'd2927,13'd3026,13'd3153,13'd6554,13'd6947,13'd7066:byte_q<=8'h87;
+13'd546,13'd605,13'd610,13'd669,13'd733,13'd802,13'd866,13'd1573,13'd1637,13'd1646,13'd1829,13'd1893,13'd3049,13'd3690,13'd3757,13'd3762,13'd3820,13'd3826,13'd3828,13'd3886,13'd3890,13'd3892:byte_q<=8'h70;
+13'd550,13'd596,13'd660,13'd871,13'd1567,13'd1640,13'd1683,13'd1887,13'd2258,13'd2798,13'd2862,13'd2919,13'd2989,13'd3040,13'd3550,13'd3614,13'd3678,13'd3742,13'd3806,13'd3870,13'd3934,13'd3995,13'd3998,13'd4007,13'd4060,13'd4305,13'd6754,13'd6818,13'd6882:byte_q<=8'h03;
+13'd551,13'd797,13'd865,13'd1643,13'd1836,13'd1883,13'd2387,13'd2993,13'd3617,13'd3687,13'd3853,13'd6679,13'd7014:byte_q<=8'h74;
+13'd601,13'd665,13'd931,13'd985,13'd2014,13'd2789,13'd2836,13'd2963,13'd3090,13'd3599,13'd3604,13'd3988,13'd4049,13'd4110,13'd4233,13'd4357,13'd4364,13'd4367,13'd4370,13'd4484,13'd4485,13'd4486,13'd4487,13'd4488,13'd4489,13'd4490,13'd4491,13'd4492,13'd4493,13'd4494,13'd4495,13'd4496,13'd4497,13'd4498,13'd4499,13'd4500,13'd4501,13'd5507,13'd5508,13'd5509,13'd5510,13'd5511,13'd5512,13'd5513,13'd5514,13'd5515,13'd5516,13'd5517,13'd5518,13'd5519,13'd5520,13'd5521,13'd5522,13'd5523,13'd5524,13'd5525,13'd5526,13'd5527,13'd5528,13'd5529,13'd5530,13'd5531,13'd5532,13'd5533,13'd5534,13'd5535,13'd5536,13'd5537,13'd5538,13'd5539,13'd5540,13'd5541,13'd5542,13'd5543,13'd5544,13'd5545,13'd5546,13'd5547,13'd5548,13'd5549,13'd5550,13'd5551,13'd5552,13'd5553,13'd5554,13'd5555,13'd7065:byte_q<=8'hAA;
+13'd603,13'd3918:byte_q<=8'hE4;
+13'd607,13'd671,13'd724,13'd735,13'd1432,13'd1514,13'd1517,13'd1578,13'd1631,13'd1642,13'd1704,13'd1706,13'd1747,13'd1770,13'd1823,13'd1830,13'd1835,13'd1894,13'd1944,13'd1966,13'd2322,13'd2705,13'd3024,13'd3563,13'd3566,13'd3570,13'd3686,13'd3812,13'd4077,13'd6548,13'd6611,13'd6612,13'd6618,13'd6622,13'd6675,13'd6676,13'd6682,13'd6690,13'd6739,13'd6740,13'd6746,13'd6804,13'd6813,13'd6868,13'd6874,13'd6932,13'd6938,13'd6946,13'd6996,13'd7002:byte_q<=8'h07;
+13'd614,13'd788,13'd852,13'd1695,13'd1759,13'd1761,13'd1811,13'd2598,13'd2854,13'd2855,13'd2925,13'd2976,13'd2982,13'd3279,13'd3470,13'd3555,13'd3560,13'd3627,13'd3750,13'd3816,13'd4003,13'd4058,13'd4076,13'd4082,13'd6547,13'd6557,13'd7010:byte_q<=8'h0B;
+13'd615,13'd1762,13'd1764,13'd1774,13'd1818,13'd1826,13'd1828,13'd1890,13'd1892,13'd1954,13'd1956,13'd2018,13'd2019,13'd3546,13'd3567,13'd3610,13'd3674,13'd3738,13'd3755,13'd3758,13'd3802,13'd3866,13'd3885,13'd3930:byte_q<=8'h28;
+13'd674,13'd1837,13'd3042,13'd6566,13'd6628:byte_q<=8'h7F;
+13'd678,13'd1511,13'd1575,13'd1639,13'd1703,13'd1705,13'd1767,13'd1831,13'd1895,13'd1959,13'd3745,13'd3809,13'd3814,13'd3815,13'd3873,13'd3941,13'd4012:byte_q<=8'h0D;
+13'd732,13'd924,13'd1572,13'd1702,13'd1953,13'd3884:byte_q<=8'hB8;
+13'd739,13'd2457,13'd2460,13'd2475,13'd2477,13'd2731,13'd2987,13'd4123,13'd4147,13'd5492,13'd6494:byte_q<=8'h54;
+13'd743,13'd2851:byte_q<=8'h5E;
+13'd806,13'd1506,13'd2450,13'd2788,13'd6564:byte_q<=8'h2E;
+13'd807,13'd3792,13'd3943,13'd4171:byte_q<=8'hAB;
+13'd863,13'd1565,13'd1763,13'd1885,13'd2606,13'd2670,13'd2990,13'd3548,13'd3612,13'd3676,13'd3740,13'd3804,13'd3868,13'd3932,13'd4062:byte_q<=8'hC3;
+13'd916,13'd2386,13'd2769,13'd7055:byte_q<=8'h0F;
+13'd923,13'd2530:byte_q<=8'hBA;
+13'd926,13'd2541,13'd4059,13'd4083,13'd4105,13'd4293,13'd7079,13'd7137:byte_q<=8'hAF;
+13'd928,13'd2779,13'd3407,13'd3726,13'd3729,13'd3947,13'd4172,13'd6884:byte_q<=8'hEA;
+13'd930,13'd1509,13'd1701,13'd1765,13'd2608,13'd3152,13'd3666,13'd3883:byte_q<=8'h7A;
+13'd933,13'd995,13'd997,13'd1428,13'd2452,13'd2787,13'd3220,13'd3667,13'd4358,13'd4361,13'd4502:byte_q<=8'hA9;
+13'd934,13'd1627,13'd1819,13'd1876,13'd2537,13'd2601,13'd2665,13'd2729,13'd2793,13'd2857,13'd2921,13'd2985,13'd3626,13'd3754,13'd3764,13'd4070,13'd6743:byte_q<=8'hB0;
+13'd984,13'd2456,13'd2468,13'd3488,13'd3540,13'd3728,13'd3985,13'd4041,13'd4104,13'd4120:byte_q<=8'h05;
+13'd987,13'd3661,13'd4363:byte_q<=8'h1A;
+13'd990,13'd2022,13'd2780,13'd3730,13'd5556,13'd7138:byte_q<=8'hA4;
+13'd992,13'd1364,13'd1445,13'd1891,13'd2021,13'd4360:byte_q<=8'h6A;
+13'd994,13'd4230:byte_q<=8'h5A;
+13'd996,13'd2466,13'd3924,13'd4167:byte_q<=8'h16;
+13'd1108,13'd1172,13'd2724,13'd2980,13'd4018,13'd6748,13'd7068:byte_q<=8'h2D;
+13'd1236,13'd6552,13'd6808,13'd6995:byte_q<=8'h3F;
+13'd1300:byte_q<=8'h7B;
+13'd1369,13'd2009,13'd3050,13'd3552,13'd3568,13'd4042:byte_q<=8'hBF;
+13'd1370,13'd1502,13'd1515,13'd1566,13'd1568,13'd1630,13'd1694,13'd1758,13'd1822,13'd1886,13'd1888,13'd2010,13'd2029,13'd2351,13'd2415,13'd2529,13'd2543,13'd2607,13'd2644,13'd2671,13'd2708,13'd2735,13'd2737,13'd3041,13'd3565,13'd3664,13'd3793,13'd3922,13'd3982,13'd4000,13'd4075,13'd4078,13'd4114,13'd4298,13'd6619,13'd6632,13'd6678,13'd6683,13'd6693,13'd6747,13'd6755,13'd6939,13'd7003,13'd7067:byte_q<=8'h80;
+13'd1433,13'd1620,13'd1945:byte_q<=8'hD6;
+13'd1434,13'd1513,13'd1946,13'd2451,13'd3623,13'd6546,13'd6940:byte_q<=8'hF0;
+13'd1436,13'd1577,13'd1636,13'd1700,13'd2795,13'd3410:byte_q<=8'hA8;
+13'd1440,13'd1634,13'd2770,13'd3942,13'd4483,13'd7128:byte_q<=8'h2A;
+13'd1442,13'd7126,13'd7139,13'd7141:byte_q<=8'h19;
+13'd1446,13'd1582,13'd1691,13'd1755,13'd1901,13'd1940,13'd2515,13'd2516,13'd2663,13'd2929,13'd3756,13'd3956,13'd4304,13'd4371:byte_q<=8'hA0;
+13'd1447,13'd2023,13'd2659,13'd3218,13'd3282,13'd3731,13'd3795,13'd3984:byte_q<=8'h09;
+13'd1492,13'd2643,13'd2897,13'd3473,13'd3536:byte_q<=8'hB9;
+13'd1496,13'd1574,13'd1633,13'd1638,13'd1768,13'd1771,13'd1825,13'd1875,13'd1880,13'd1902,13'd3630,13'd7075:byte_q<=8'h0E;
+13'd1501,13'd1949,13'd2542,13'd2926,13'd3615,13'd6677:byte_q<=8'h43;
+13'd1505,13'd2920,13'd3048:byte_q<=8'hB4;
+13'd1510,13'd7074:byte_q<=8'hBD;
+13'd1556,13'd2012,13'd4043:byte_q<=8'hF9;
+13'd1562,13'd2398,13'd2480,13'd4143,13'd4243:byte_q<=8'h14;
+13'd1570,13'd2532,13'd2796,13'd3044,13'd7062:byte_q<=8'h2F;
+13'd1581,13'd1697,13'd2662,13'd2726,13'd2915,13'd2918,13'd3624,13'd3688,13'd3752,13'd3880,13'd3944,13'd4013,13'd4302,13'd7123,13'd7132:byte_q<=8'h0A;
+13'd1624,13'd1688,13'd1707,13'd1709,13'd1752,13'd1896,13'd2596,13'd2660,13'd2833,13'd2852,13'd2916,13'd3621,13'd3631,13'd3681,13'd3683,13'd3695,13'd3751,13'd3759,13'd3823,13'd3887,13'd3951,13'd3993,13'd4015,13'd4079,13'd6685,13'd6991,13'd7077:byte_q<=8'h2C;
+13'd1629,13'd2736,13'd6802:byte_q<=8'hD3;
+13'd1635,13'd1951,13'd2470,13'd2964,13'd3028,13'd3092,13'd3981,13'd3989,13'd4063,13'd4126,13'd6559,13'd6805,13'd6815:byte_q<=8'h41;
+13'd1641:byte_q<=8'h5C;
+13'd1645:byte_q<=8'h0C;
+13'd1684:byte_q<=8'h9E;
+13'd1693,13'd1757:byte_q<=8'hA3;
+13'd1698:byte_q<=8'h29;
+13'd1699,13'd2586,13'd2720:byte_q<=8'hC2;
+13'd1766,13'd2578,13'd3344,13'd3855:byte_q<=8'hAD;
+13'd1773,13'd2732,13'd6616,13'd6872:byte_q<=8'h39;
+13'd1821:byte_q<=8'hE3;
+13'd1827,13'd6867:byte_q<=8'hD7;
+13'd1900,13'd1964,13'd2524,13'd2531,13'd2984,13'd3043,13'd3598,13'd4057,13'd4069,13'd6556,13'd6812,13'd6949:byte_q<=8'hF4;
+13'd1950:byte_q<=8'h95;
+13'd1955,13'd2527,13'd6615,13'd7005:byte_q<=8'h3C;
+13'd1957,13'd2067,13'd4173,13'd6630:byte_q<=8'h79;
+13'd1958,13'd2979:byte_q<=8'h6E;
+13'd1962:byte_q<=8'hC7;
+13'd2003,13'd2068,13'd3343,13'd7142:byte_q<=8'h2B;
+13'd2004:byte_q<=8'h22;
+13'd2024,13'd3537,13'd3601,13'd3794,13'd4237:byte_q<=8'h60;
+13'd2026,13'd3347:byte_q<=8'h96;
+13'd2028:byte_q<=8'h65;
+13'd2131:byte_q<=8'hFC;
+13'd2132,13'd2719:byte_q<=8'h35;
+13'd2195,13'd2642,13'd3036,13'd3471,13'd6562,13'd6610:byte_q<=8'hF8;
+13'd2196,13'd2260:byte_q<=8'hA1;
+13'd2259:byte_q<=8'h9A;
+13'd2323,13'd3877:byte_q<=8'h5D;
+13'd2324,13'd3535:byte_q<=8'h61;
+13'd2388,13'd3027:byte_q<=8'h92;
+13'd2463,13'd2472,13'd2473,13'd6415:byte_q<=8'h10;
+13'd2476,13'd3428,13'd4128,13'd4132,13'd4138,13'd4547,13'd6488,13'd6502:byte_q<=8'h15;
+13'd2514,13'd3283:byte_q<=8'h6B;
+13'd2534,13'd2790,13'd3679,13'd6613,13'd7011:byte_q<=8'h4B;
+13'd2540,13'd2591,13'd7064:byte_q<=8'h3E;
+13'd2544:byte_q<=8'h3D;
+13'd2579,13'd2733,13'd2969:byte_q<=8'h57;
+13'd2650,13'd2784,13'd2842,13'd3216,13'd6756:byte_q<=8'hE2;
+13'd2655,13'd6998:byte_q<=8'h3B;
+13'd2672:byte_q<=8'hA7;
+13'd2714,13'd2778:byte_q<=8'hA2;
+13'd2715,13'd2971,13'd4050:byte_q<=8'hD5;
+13'd2734,13'd2863,13'd2913,13'd3996:byte_q<=8'h83;
+13'd2771,13'd2835,13'd2977,13'd3628,13'd6819,13'd7057:byte_q<=8'h81;
+13'd2772,13'd3154:byte_q<=8'h86;
+13'd2785,13'd3280,13'd6803:byte_q<=8'h8B;
+13'd2794,13'd3917,13'd4064,13'd4232,13'd7073:byte_q<=8'hFA;
+13'd2800,13'd6623,13'd7071:byte_q<=8'hC1;
+13'd2848,13'd4074:byte_q<=8'h76;
+13'd2898,13'd6820,13'd6866,13'd6879,13'd6993:byte_q<=8'hD1;
+13'd2899,13'd4235:byte_q<=8'h46;
+13'd2900,13'd3663,13'd3665,13'd4106,13'd6687:byte_q<=8'h91;
+13'd2906,13'd3054,13'd3089:byte_q<=8'hD2;
+13'd2961,13'd3217,13'd3879,13'd3987,13'd4048:byte_q<=8'hAE;
+13'd2991,13'd3046,13'd4008:byte_q<=8'h8A;
+13'd3025:byte_q<=8'hB5;
+13'd3055:byte_q<=8'h8D;
+13'd3281:byte_q<=8'h89;
+13'd3345,13'd3790,13'd3859,13'd3923:byte_q<=8'h08;
+13'd3408,13'd4051:byte_q<=8'h58;
+13'd3417,13'd6485,13'd6487,13'd6500:byte_q<=8'h04;
+13'd3472:byte_q<=8'h25;
+13'd3534,13'd3854,13'd7078:byte_q<=8'h7E;
+13'd3632:byte_q<=8'h12;
+13'd3662:byte_q<=8'hE7;
+13'd3725:byte_q<=8'hB6;
+13'd3743:byte_q<=8'h4E;
+13'd3807,13'd3871:byte_q<=8'h4D;
+13'd3915,13'd6878:byte_q<=8'h1B;
+13'd3935:byte_q<=8'h4A;
+13'd3948:byte_q<=8'hAC;
+13'd3979:byte_q<=8'hEB;
+13'd3980:byte_q<=8'hEF;
+13'd3983,13'd4240:byte_q<=8'h20;
+13'd3986:byte_q<=8'hDA;
+13'd4005,13'd6620:byte_q<=8'h6D;
+13'd4010,13'd6545,13'd6609,13'd6673,13'd6737,13'd6801,13'd6865,13'd6870,13'd6929,13'd6943,13'd7007:byte_q<=8'hE1;
+13'd4047:byte_q<=8'hA6;
+13'd4072:byte_q<=8'hCA;
+13'd4109:byte_q<=8'h5F;
+13'd4111,13'd4295,13'd7143:byte_q<=8'hE9;
+13'd4112:byte_q<=8'h68;
+13'd4136:byte_q<=8'h45;
+13'd4168,13'd4169,13'd4296:byte_q<=8'hBE;
+13'd4234:byte_q<=8'hF5;
+13'd4297:byte_q<=8'h56;
+13'd4307:byte_q<=8'h64;
+13'd6549:byte_q<=8'h4F;
+13'd6674:byte_q<=8'hED;
+13'd6692:byte_q<=8'hB7;
+13'd6738:byte_q<=8'hDB;
+13'd6875,13'd7056,13'd7070:byte_q<=8'h9B;
+13'd6931:byte_q<=8'hBB;
+13'd6934:byte_q<=8'hB2;
+13'd7129:byte_q<=8'hFB;
+default:byte_q<=8'd0;
+endcase
+end
+assign level=byte_q[{~column_q,1'b0}+:2];
+endmodule
+`timescale 1ns/1ps
+module presentation_diagnostic_layout(
+input wire[10:0]x,
+input wire[9:0]y,
+output reg[10:0]diag_x,
+output wire[9:0]diag_y
+);
+wire inside_box=(x>=11'd128)&&(x<11'd256)&&(x[3:0]<4'd12)&&
+(y>=10'd103)&&(y<10'd115);
+assign diag_y=inside_box?10'd48:10'd0;
+always@*begin
+case(x[6:4])
+3'd0:diag_x=11'd128;
+3'd1:diag_x=11'd208;
+3'd2:diag_x=11'd288;
+3'd3:diag_x=11'd368;
+3'd4:diag_x=11'd448;
+3'd5:diag_x=11'd528;
+3'd6:diag_x=11'd608;
+default:diag_x=11'd688;
+endcase
+end
+endmodule
+module presentation_overlay(
+input wire pixel_clk,
+input wire rst_n,
+input wire[10:0]x,
+input wire[9:0]y,
+input wire mode,
+input wire[23:0]rgb_in,
+input wire de_in,hsync_in,vsync_in,
+output reg[23:0]rgb_out,
+output reg de_out,hsync_out,vsync_out
+);
+localparam[3:0]NONE=0,PROJECT=1,TITLE=2,AUTHORS=3,
+TIME_AXIS=5,FREQ_AXIS=6,ZERO=7,
+TIME_1=8,TIME_2=9,TIME_3=10,TIME_4=11,
+FREQ_1=12,FREQ_2=13,FREQ_3=14,FREQ_4=15;
+function automatic[7:0]character_at(input[3:0]line,input[5:0]column);
+reg[511:0]line_data;
+begin
+case(line)
+PROJECT:line_data={"Proyecto final ELDI",360'd0};
+TITLE:line_data={"Analizador FFT",400'd0};
+AUTHORS:line_data={"Carlos Jose Castiblanco / Jarid Camilo Ojeda",160'd0};
+TIME_AXIS:line_data={"Tiempo (ms)",424'd0};
+FREQ_AXIS:line_data={"Frecuencia (kHz)",384'd0};
+ZERO:line_data={"0",504'd0};
+TIME_1:line_data={"0,32",480'd0};
+TIME_2:line_data={"0,64",480'd0};
+TIME_3:line_data={"0,96",480'd0};
+TIME_4:line_data={"1,275",472'd0};
+FREQ_1:line_data={"25",496'd0};
+FREQ_2:line_data={"50",496'd0};
+FREQ_3:line_data={"75",496'd0};
+FREQ_4:line_data={"100",488'd0};
+default:line_data=512'd0;
+endcase
+character_at=line_data[{~column,3'b000}+:8];
+end
+endfunction
+reg[3:0]line;
+reg[10:0]x_text_start;
+reg[9:0]y_text_start;
+reg title_scale;
+always@*begin
+line=NONE;
+x_text_start=11'd128;
+y_text_start=10'd18;
+title_scale=1'b0;
+if((y>=10'd18)&&(y<10'd32)&&(x>=11'd128)&&(x<11'd432))begin
+line=PROJECT;
+end else if((y>=10'd40)&&(y<10'd68)&&(x>=11'd128)&&(x<11'd576))begin
+line=TITLE;
+y_text_start=10'd40;
+title_scale=1'b1;
+end else if((y>=10'd82)&&(y<10'd96)&&(x>=11'd128)&&(x<11'd832))begin
+line=AUTHORS;
+y_text_start=10'd82;
+end else if((y>=10'd656)&&(y<10'd670))begin
+y_text_start=10'd656;
+if((x>=11'd123)&&(x<11'd139))begin
+line=ZERO;
+x_text_start=11'd123;
+end else if((x>=11'd352)&&(x<11'd416))begin
+line=mode?FREQ_1:TIME_1;
+x_text_start=mode?11'd371:11'd355;
+end else if((x>=11'd608)&&(x<11'd672))begin
+line=mode?FREQ_2:TIME_2;
+x_text_start=mode?11'd627:11'd611;
+end else if((x>=11'd864)&&(x<11'd928))begin
+line=mode?FREQ_3:TIME_3;
+x_text_start=mode?11'd883:11'd867;
+end else if((x>=11'd1111)&&(x<11'd1192))begin
+line=mode?FREQ_4:TIME_4;
+x_text_start=mode?11'd1131:11'd1111;
+end
+end else if((y>=10'd690)&&(y<10'd704))begin
+line=mode?FREQ_AXIS:TIME_AXIS;
+x_text_start=mode?11'd516:11'd552;
+y_text_start=10'd690;
+end
+end
+wire[10:0]text_dx=x-x_text_start;
+wire[9:0]text_dy=y-y_text_start;
+wire[10:0]label_extent=(line==FREQ_AXIS)?11'd256:11'd176;
+wire text_valid=(line!=NONE)&&(x>=x_text_start)&&
+(!(line==TIME_AXIS||line==FREQ_AXIS)||(text_dx<label_extent));
+wire tick=(y>=10'd642)&&(y<=10'd648)&&
+(x==11'd128||x==11'd384||x==11'd640||x==11'd896||
+x==(mode?11'd1152:11'd1148));
+wire logo_region=(x>=11'd936)&&(x<11'd1160)&&(y>=10'd8)&&(y<10'd120);
+wire[1:0]logo_level;
+presentation_logo logo(
+.clk(pixel_clk),.x(x[7:0]-8'd168),.y(y[6:0]-7'd8),.level(logo_level)
+);
+reg[3:0]line_0;
+reg[5:0]char_col_0;
+reg[2:0]glyph_col_0,glyph_row_0,glyph_col_1,glyph_row_1;
+reg tick_0,tick_1,tick_2;
+reg logo_0;
+reg[1:0]logo_1,logo_2;
+reg[7:0]character_1;
+reg title_1,title_2,text_2;
+reg[23:0]rgb_2;
+reg de_2,hs_2,vs_2;
+wire[4:0]row_pixels;
+presentation_font font_rom(.character(character_1),.row(glyph_row_1),.pixels(row_pixels));
+always@(posedge pixel_clk or negedge rst_n)begin
+if(!rst_n)begin
+line_0<=NONE;
+char_col_0<=0;
+glyph_col_0<=0;glyph_row_0<=0;
+glyph_col_1<=0;glyph_row_1<=0;
+character_1<=0;
+tick_0<=0;tick_1<=0;tick_2<=0;
+logo_0<=0;logo_1<=0;logo_2<=0;
+title_1<=0;title_2<=0;text_2<=0;
+rgb_2<=0;de_2<=0;hs_2<=0;vs_2<=0;
+rgb_out<=0;de_out<=0;hsync_out<=0;vsync_out<=0;
+end else begin
+line_0<=text_valid?line:NONE;
+char_col_0<=title_scale?text_dx[10:5]:text_dx[9:4];
+glyph_col_0<=title_scale?text_dx[4:2]:text_dx[3:1];
+glyph_row_0<=title_scale?text_dy[4:2]:text_dy[3:1];
+logo_0<=logo_region;
+tick_0<=tick;
+character_1<=character_at(line_0,char_col_0);
+glyph_col_1<=glyph_col_0;
+glyph_row_1<=glyph_row_0;
+title_1<=line_0==TITLE;
+logo_1<=logo_0?logo_level:2'd0;
+tick_1<=tick_0;
+text_2<=glyph_col_1<3'd5&&row_pixels[3'd4-glyph_col_1];
+title_2<=title_1;
+logo_2<=logo_1;
+tick_2<=tick_1;
+rgb_2<=rgb_in;
+de_2<=de_in;hs_2<=hsync_in;vs_2<=vsync_in;
+if(!de_2)rgb_out<=24'h000000;
+else if(logo_2==2'd3)rgb_out<=24'hffffff;
+else if(logo_2==2'd2)rgb_out<=24'h9aa3af;
+else if(logo_2==2'd1)rgb_out<=24'h454a52;
+else if(text_2&&title_2)rgb_out<=24'he8eef6;
+else if(text_2)rgb_out<=24'hacb8c8;
+else if(tick_2)rgb_out<=24'h758498;
+else rgb_out<=rgb_2;
+de_out<=de_2;hsync_out<=hs_2;vsync_out<=vs_2;
+end
+end
+endmodule
+`timescale 1ns/1ps
+module analyzer_core#(
+parameter integer ADC_STARTUP_CYCLES=1_350_000,
+parameter integer DEBOUNCE_CYCLES=1_485_000,
+parameter integer VIDEO_TEST_PATTERN=0
+)(
+input wire clk27,
+input wire pix_clk,
+input wire rst27_n,
+input wire rstpix_n,
+input wire key_s2,
+input wire adc_busy,
+input wire adc_fd,
+input wire[7:0]adc_db,
+output wire adc_convst,
+output wire adc_cs_n,
+output wire adc_rd_n,
+output wire adc_reset,
+output wire[9:0]tmds_red,
+output wire[9:0]tmds_green,
+output wire[9:0]tmds_blue,
+output wire mode_fft,
+output wire adc_fault,
+output wire processor_fault,
+output wire display_fault,
+output wire front_valid,
+output wire[31:0]front_seq,
+output wire[7:0]rgb_r,
+output wire[7:0]rgb_g,
+output wire[7:0]rgb_b,
+output wire video_de,
+output wire video_hsync,
+output wire video_vsync,
+output wire[10:0]pixel_x,
+output wire[9:0]pixel_y,
+output wire pixel_frame_start,
+output wire debug_sample_valid,
+output wire signed[15:0]debug_sample_signed,
+output wire debug_frame_begin,
+output wire[31:0]debug_frame_seq,
+output wire debug_wave_valid,
+output wire[7:0]debug_wave_index,
+output wire signed[15:0]debug_wave_sample,
+output wire debug_spectrum_valid,
+output wire[7:0]debug_spectrum_index,
+output wire[17:0]debug_spectrum_mag,
+output wire debug_frame_done,
+output wire debug_display_busy
+);
+wire timing_de,timing_hsync,timing_vsync;
+wire[7:0]raw_r,raw_g,raw_b;
+wire raw_video_de,raw_video_hsync,raw_video_vsync;
+wire[23:0]overlay_rgb;
+wire[10:0]diag_x;
+wire[9:0]diag_y;
+wire[3:0]diag_adc_code,diag_processor_code;
+video_timing_720p timing(
+.clk(pix_clk),.rst_n(rstpix_n),.x(pixel_x),.y(pixel_y),
+.de(timing_de),.hsync(timing_hsync),.vsync(timing_vsync),
+.frame_start(pixel_frame_start)
+);
+view_selector#(.DEBOUNCE_CYCLES(DEBOUNCE_CYCLES))selector(
+.clk(pix_clk),.rst_n(rstpix_n),.key_s2(key_s2),
+.frame_start(pixel_frame_start),.mode_fft(mode_fft)
+);
+generate
+if(VIDEO_TEST_PATTERN==0)begin:acquisition_video
+wire[3:0]adc_fault_code,processor_fault_code;
+assign diag_adc_code=adc_fault_code;
+assign diag_processor_code=processor_fault_code;
+wire processor_busy;
+wire rd_en,rd_valid;
+wire[7:0]rd_wave_addr,rd_spectrum_addr;
+wire signed[15:0]wave_prev,wave_sample;
+wire[17:0]spectrum_mag;
+ad7606_byte_reader#(.STARTUP_CYCLES(ADC_STARTUP_CYCLES))adc_reader(
+.clk(clk27),.rst_n(rst27_n),.adc_busy(adc_busy),
+.adc_fd(adc_fd),.adc_db(adc_db),
+.adc_convst(adc_convst),.adc_cs_n(adc_cs_n),
+.adc_rd_n(adc_rd_n),.adc_reset(adc_reset),
+.sample_signed(debug_sample_signed),.sample_valid(debug_sample_valid),
+.fault_latched(adc_fault),.fault_code(adc_fault_code)
+);
+signal_processor processor(
+.clk(clk27),.rst_n(rst27_n),
+.sample_valid(debug_sample_valid),.sample_signed(debug_sample_signed),
+.frame_begin(debug_frame_begin),.frame_seq(debug_frame_seq),
+.wave_valid(debug_wave_valid),.wave_index(debug_wave_index),
+.wave_sample(debug_wave_sample),.spectrum_valid(debug_spectrum_valid),
+.spectrum_index(debug_spectrum_index),.spectrum_mag(debug_spectrum_mag),
+.frame_done(debug_frame_done),.busy(processor_busy),
+.fault_latched(processor_fault),.fault_code(processor_fault_code)
+);
+display_buffer display(
+.wr_clk(clk27),.wr_rst_n(rst27_n),
+.pix_clk(pix_clk),.pix_rst_n(rstpix_n),.frame_start(pixel_frame_start),
+.frame_begin(debug_frame_begin),.frame_seq(debug_frame_seq),
+.wave_valid(debug_wave_valid),.wave_index(debug_wave_index),
+.wave_sample(debug_wave_sample),.spectrum_valid(debug_spectrum_valid),
+.spectrum_index(debug_spectrum_index),.spectrum_mag(debug_spectrum_mag),
+.frame_done(debug_frame_done),.wr_busy(debug_display_busy),
+.wr_fault_latched(display_fault),.front_valid(front_valid),.front_seq(front_seq),
+.rd_en(rd_en),.rd_wave_addr(rd_wave_addr),.rd_spectrum_addr(rd_spectrum_addr),
+.rd_valid(rd_valid),.rd_wave_prev(wave_prev),.rd_wave_sample(wave_sample),
+.rd_spectrum_mag(spectrum_mag)
+);
+plot_renderer renderer(
+.clk(pix_clk),.rst_n(rstpix_n),.x(pixel_x),.y(pixel_y),
+.de(timing_de),.hsync(timing_hsync),.vsync(timing_vsync),
+.mode_fft(mode_fft),.front_valid(front_valid),
+.rd_en(rd_en),.rd_wave_addr(rd_wave_addr),.rd_spectrum_addr(rd_spectrum_addr),
+.rd_valid(rd_valid),.wave_prev(wave_prev),.wave_sample(wave_sample),
+.spectrum_mag(spectrum_mag),.rgb_r(raw_r),.rgb_g(raw_g),.rgb_b(raw_b),
+.de_out(raw_video_de),.hsync_out(raw_video_hsync),.vsync_out(raw_video_vsync)
+);
+end else begin:bars_video
+reg[23:0]color_q,color_out;
+reg de_q,hs_q,vs_q,de_out,hs_out,vs_out;
+function automatic[23:0]bar_color(input[10:0]x);
+begin
+if(x<160)bar_color=24'hffffff;
+else if(x<320)bar_color=24'hffff00;
+else if(x<480)bar_color=24'h00ffff;
+else if(x<640)bar_color=24'h00ff00;
+else if(x<800)bar_color=24'hff00ff;
+else if(x<960)bar_color=24'hff0000;
+else if(x<1120)bar_color=24'h0000ff;
+else bar_color=24'h000000;
+end
+endfunction
+always@(posedge pix_clk or negedge rstpix_n)begin
+if(!rstpix_n)begin
+color_q<=0;color_out<=0;
+de_q<=0;hs_q<=0;vs_q<=0;
+de_out<=0;hs_out<=0;vs_out<=0;
+end else begin
+color_q<=timing_de?bar_color(pixel_x):24'd0;
+color_out<=color_q;
+de_q<=timing_de;hs_q<=timing_hsync;vs_q<=timing_vsync;
+de_out<=de_q;hs_out<=hs_q;vs_out<=vs_q;
+end
+end
+assign{raw_r,raw_g,raw_b}=color_out;
+assign diag_adc_code=4'd0;
+assign diag_processor_code=4'd0;
+assign raw_video_de=de_out;
+assign raw_video_hsync=hs_out;
+assign raw_video_vsync=vs_out;
+assign adc_convst=1'b0;
+assign adc_cs_n=1'b1;
+assign adc_rd_n=1'b1;
+assign adc_reset=1'b0;
+assign adc_fault=1'b0;
+assign processor_fault=1'b0;
+assign display_fault=1'b0;
+assign front_valid=rstpix_n;
+assign front_seq=32'd0;
+assign debug_sample_valid=1'b0;
+assign debug_sample_signed=16'sd0;
+assign debug_frame_begin=1'b0;
+assign debug_frame_seq=32'd0;
+assign debug_wave_valid=1'b0;
+assign debug_wave_index=8'd0;
+assign debug_wave_sample=16'sd0;
+assign debug_spectrum_valid=1'b0;
+assign debug_spectrum_index=8'd0;
+assign debug_spectrum_mag=18'd0;
+assign debug_frame_done=1'b0;
+assign debug_display_busy=1'b0;
+end
+endgenerate
+presentation_diagnostic_layout compact_boxes(
+.x(pixel_x),.y(pixel_y),.diag_x(diag_x),.diag_y(diag_y)
+);
+diagnostic_overlay diag_overlay(
+.wr_clk27(clk27),.wr_rst_n(rst27_n),
+.pix_clk(pix_clk),.pix_rst_n(rstpix_n),
+.pixel_frame_start(pixel_frame_start),.pixel_x(diag_x),.pixel_y(diag_y),
+.video_de(raw_video_de),.in_rgb({raw_r,raw_g,raw_b}),
+.adc_fault(adc_fault),.adc_code(diag_adc_code),
+.processor_fault(processor_fault),.processor_code(diag_processor_code),
+.display_fault(display_fault),.out_rgb(overlay_rgb)
+);
+presentation_overlay annotations(
+.pixel_clk(pix_clk),.rst_n(rstpix_n),
+.x(pixel_x),.y(pixel_y),.mode(mode_fft),
+.rgb_in(overlay_rgb),.de_in(raw_video_de),
+.hsync_in(raw_video_hsync),.vsync_in(raw_video_vsync),
+.rgb_out({rgb_r,rgb_g,rgb_b}),.de_out(video_de),
+.hsync_out(video_hsync),.vsync_out(video_vsync)
+);
+tmds_encoder encode_red(
+.clk(pix_clk),.rst_n(rstpix_n),.de(video_de),.data(rgb_r),
+.c0(1'b0),.c1(1'b0),.symbol(tmds_red)
+);
+tmds_encoder encode_green(
+.clk(pix_clk),.rst_n(rstpix_n),.de(video_de),.data(rgb_g),
+.c0(1'b0),.c1(1'b0),.symbol(tmds_green)
+);
+tmds_encoder encode_blue(
+.clk(pix_clk),.rst_n(rstpix_n),.de(video_de),.data(rgb_b),
+.c0(video_hsync),.c1(video_vsync),.symbol(tmds_blue)
+);
+endmodule
